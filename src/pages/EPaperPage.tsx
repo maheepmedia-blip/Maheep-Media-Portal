@@ -14,14 +14,15 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
 import { ArticleImage } from '../components/ArticleImage.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
-import type { Edition, EditionPage } from '../types/news.ts';
+import type { Advertisement, Edition, EditionPage } from '../types/news.ts';
+import { formatIndiaDateTime } from '../utils/date.ts';
 import { downloadEditionPdf } from '../utils/pdf.ts';
 
 type PaperTheme = 'light' | 'sepia' | 'dark';
@@ -36,15 +37,134 @@ interface ArchiveHit {
   summary: string;
 }
 
+function getDetailedStoryBody(summary: string, content?: string) {
+  const cleanSummary = (summary || '').trim();
+  const cleanContent = (content || '').trim();
+
+  let standfirst = '';
+  let paragraphs: string[] = [];
+
+  if (!cleanContent || cleanContent === cleanSummary) {
+    paragraphs = cleanSummary
+      .split(/\n+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+  } else {
+    const bodyParas = cleanContent
+      .split(/\n+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const startsWithSummary =
+      cleanSummary.length > 20 &&
+      bodyParas.length > 0 &&
+      bodyParas[0].toLowerCase().startsWith(cleanSummary.slice(0, 40).toLowerCase());
+    standfirst = startsWithSummary ? '' : cleanSummary;
+    paragraphs = bodyParas;
+  }
+
+  const allWords = [standfirst, ...paragraphs].join(' ').trim().split(/\s+/).filter(Boolean).length;
+  const readMins = Math.max(1, Math.ceil(allWords / 180));
+  return { standfirst, paragraphs, wordCount: allWords, readMins };
+}
+
+function BroadsheetSponsorBox({
+  ad,
+  paperTheme,
+}: {
+  ad: Advertisement;
+  paperTheme: PaperTheme;
+}) {
+  const trackedRef = useRef<string>('');
+
+  useEffect(() => {
+    if (!ad?.id || trackedRef.current === ad.id) return;
+    trackedRef.current = ad.id;
+    fetch(`/api/ads/${encodeURIComponent(ad.id)}/track`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 'impression' }),
+      keepalive: true,
+    }).catch(() => {});
+  }, [ad?.id]);
+
+  const trackClick = () => {
+    fetch(`/api/ads/${encodeURIComponent(ad.id)}/track`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 'click' }),
+      keepalive: true,
+    }).catch(() => {});
+  };
+
+  const boxColors =
+    paperTheme === 'sepia'
+      ? 'bg-[#F3EBD8] border-[#B69F72] text-[#292118]'
+      : paperTheme === 'dark'
+      ? 'bg-neutral-900 border-[#159B42]/60 text-neutral-100'
+      : 'bg-[#EAF5E5]/65 border-[#00652E] text-neutral-950';
+
+  const content = (
+    <div className={`border-2 rounded-md p-4 space-y-2.5 ${boxColors}`}>
+      <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider opacity-75 border-b border-current/15 pb-1.5">
+        <span>Advertisement · विज्ञापन</span>
+        {ad.advertiser && <span>Sponsored by {ad.advertiser}</span>}
+      </div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5">
+        <div className="flex items-start sm:items-center gap-3.5 min-w-0">
+          {ad.image_url && (
+            <img
+              src={ad.image_url}
+              alt={ad.title}
+              loading="lazy"
+              className="w-24 sm:w-32 h-16 sm:h-20 object-cover rounded border border-current/15 shrink-0 bg-white"
+            />
+          )}
+          <div className="min-w-0">
+            <h4 className="font-editorial text-base sm:text-lg font-bold leading-snug">{ad.title}</h4>
+            {ad.description && <p className="text-xs sm:text-sm opacity-85 mt-1 leading-relaxed">{ad.description}</p>}
+          </div>
+        </div>
+        {ad.target_url && (
+          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-[#00652E] text-white text-xs font-semibold shrink-0 whitespace-nowrap self-start sm:self-center">
+            {ad.cta_text || 'Learn More'}
+            <ExternalLink className="w-3.5 h-3.5" />
+          </span>
+        )}
+      </div>
+    </div>
+  );
+
+  if (!ad.target_url) return content;
+  if (ad.target_url.startsWith('/')) {
+    return (
+      <Link to={ad.target_url} onClick={trackClick} className="block hover:opacity-95 transition-opacity">
+        {content}
+      </Link>
+    );
+  }
+  return (
+    <a
+      href={ad.target_url}
+      target="_blank"
+      rel="noopener noreferrer sponsored"
+      onClick={trackClick}
+      className="block hover:opacity-95 transition-opacity"
+    >
+      {content}
+    </a>
+  );
+}
+
 export function EPaperPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { readerToken, readerUser, setReaderDrawerOpen } = usePortal();
+  const { language, readerToken, readerUser, setReaderDrawerOpen } = usePortal();
 
   const [editions, setEditions] = useState<Edition[]>([]);
   const [selectedEdition, setSelectedEdition] = useState<Edition | null>(null);
   const [currentPageIdx, setCurrentPageIdx] = useState(0);
   const [monthFilter, setMonthFilter] = useState('');
   const [loading, setLoading] = useState(true);
+  const [activeAds, setActiveAds] = useState<Advertisement[]>([]);
 
   // Smart Reader Controls
   const [zoom, setZoom] = useState<number>(100);
@@ -58,6 +178,15 @@ export function EPaperPage() {
   const [archiveHits, setArchiveHits] = useState<ArchiveHit[]>([]);
   const [searchingArchive, setSearchingArchive] = useState(false);
   const [showArchiveResults, setShowArchiveResults] = useState(false);
+
+  useEffect(() => {
+    const qs = new URLSearchParams({ placement: 'epaper_banner' });
+    if (language === 'en' || language === 'hi') qs.set('lang', language);
+    fetch(`/api/ads?${qs.toString()}`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((json) => setActiveAds((json.ads || []) as Advertisement[]))
+      .catch(() => setActiveAds([]));
+  }, [language]);
 
   useEffect(() => {
     setLoading(true);
@@ -92,6 +221,7 @@ export function EPaperPage() {
   }, [selectedEdition]);
 
   const activePage = pages[currentPageIdx] || pages[0];
+  const broadsheetAd = activeAds.length > 0 ? activeAds[currentPageIdx % activeAds.length] : null;
 
   // Track reader continue-from-last-page progress
   useEffect(() => {
@@ -180,7 +310,7 @@ export function EPaperPage() {
       : 'bg-white text-neutral-950 border-neutral-300';
 
   const clickableIndex = pages.flatMap((p, pIdx) =>
-    p.articles.slice(0, 2).map((a) => ({
+    p.articles.slice(0, 3).map((a) => ({
       pageNumber: p.pageNumber,
       pageIdx: pIdx,
       sectionTitle: p.sectionTitle,
@@ -192,7 +322,7 @@ export function EPaperPage() {
     <PublicLayout>
       <SeoHead
         title="Digital E-Paper & Archive Reader — Maheep News Portal"
-        description="Smart Maheep Digital Broadsheet with page zoom, Sepia/Dark/Light reading themes, Clean Article Mode, clickable newspaper index, and full archive search."
+        description="Detailed Maheep Digital Broadsheet with full multi-paragraph reporting, page zoom, Sepia/Dark/Light reading themes, Clean Article Mode, clickable index, and archive search."
         canonicalPath="/epaper"
       />
 
@@ -202,13 +332,13 @@ export function EPaperPage() {
           <div className="pb-6 border-b border-neutral-200 dark:border-neutral-800 flex flex-col lg:flex-row lg:items-end justify-between gap-4 no-print">
             <div>
               <p className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80]">
-                ई-पेपर स्मार्ट रीडर · Digital Broadsheet
+                ई-पेपर स्मार्ट रीडर · Detailed Digital Broadsheet
               </p>
               <h1 className="font-editorial text-3xl sm:text-4xl font-bold text-neutral-950 dark:text-white mt-1">
                 Maheep Daily E-Paper &amp; Archive
               </h1>
               <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-                Browse print-layout A4 pages, switch to Clean Article Mode, zoom, or search past newspaper editions.
+                Full multi-column newspaper editions with complete stories, source attribution, Article Mode, and PDF export.
               </p>
             </div>
 
@@ -232,7 +362,7 @@ export function EPaperPage() {
                 >
                   {editions.map((ed) => (
                     <option key={ed.id} value={ed.edition_date}>
-                      {ed.edition_date} — {ed.page_count} Pages
+                      {ed.edition_date} — {ed.page_count} Pages · {ed.article_count} Reports
                     </option>
                   ))}
                 </select>
@@ -242,7 +372,7 @@ export function EPaperPage() {
                 <>
                   <button
                     type="button"
-                    onClick={() => downloadEditionPdf(selectedEdition)}
+                    onClick={() => downloadEditionPdf(selectedEdition, activeAds)}
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold transition-colors whitespace-nowrap"
                   >
                     <Download className="w-3.5 h-3.5" /> PDF
@@ -442,7 +572,7 @@ export function EPaperPage() {
                           {ed.edition_date}
                         </div>
                         <div className="text-neutral-500 dark:text-neutral-400 truncate mt-0.5">
-                          {ed.page_count} Pages · {ed.article_count} Articles
+                          {ed.page_count} Pages · {ed.article_count} Detailed Stories
                         </div>
                       </button>
                     ))}
@@ -567,40 +697,85 @@ export function EPaperPage() {
               {/* Clean Article Reader Mode vs Broadsheet Sheet */}
               {viewMode === 'article' ? (
                 <div className={`rounded-lg border p-6 sm:p-10 space-y-6 ${sheetClass}`}>
-                  <div className="border-b border-current/15 pb-3 flex items-center justify-between text-xs font-mono-tabular">
+                  <div className="border-b border-current/15 pb-3 flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular">
                     <span>
                       Clean Article Mode · {activePage.sectionTitle} · {selectedEdition.edition_date}
                     </span>
-                    <span>Page {activePage.pageNumber}</span>
+                    <span>
+                      Page {activePage.pageNumber} of {pages.length} · {activePage.articles.length} Detailed Reports
+                    </span>
                   </div>
+
+                  {broadsheetAd && <BroadsheetSponsorBox ad={broadsheetAd} paperTheme={paperTheme} />}
+
                   <div className="max-w-2xl mx-auto space-y-8">
-                    {activePage.articles.map((art, idx) => (
-                      <article key={idx} className="pb-6 border-b border-current/10 last:border-0 space-y-2.5">
-                        <div className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80]">
-                          {art.category_name}
-                          {art.state_name ? ` · ${art.state_name}` : ''} · {art.source_name}
-                        </div>
-                        {art.slug ? (
-                          <Link
-                            to={`/news/${art.slug}`}
-                            className="font-editorial text-2xl sm:text-3xl font-bold hover:text-[#00652E] block leading-tight"
-                          >
-                            {art.title}
-                          </Link>
-                        ) : (
-                          <h3 className="font-editorial text-2xl sm:text-3xl font-bold leading-tight">{art.title}</h3>
-                        )}
-                        <p className="text-base leading-relaxed opacity-90">{art.summary}</p>
-                        <div className="flex items-center justify-between text-xs opacity-70 pt-1">
-                          <span>By {art.author || 'Editorial Desk'}</span>
-                          {art.slug && (
-                            <Link to={`/news/${art.slug}`} className="font-semibold text-[#00652E] hover:underline">
-                              Read Full Report →
+                    {activePage.articles.map((art, idx) => {
+                      const { standfirst, paragraphs, readMins } = getDetailedStoryBody(art.summary, art.content);
+                      const timeLabel = formatIndiaDateTime(art.published_at);
+                      const metaParts = [
+                        art.category_name || 'News',
+                        art.state_name || '',
+                        art.subtopic || '',
+                        art.source_name || 'Maheep Desk',
+                      ].filter(Boolean);
+
+                      return (
+                        <article key={idx} className="pb-8 border-b border-current/15 last:border-0 space-y-3">
+                          <div className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80]">
+                            {metaParts.join(' · ')}
+                          </div>
+                          {art.slug ? (
+                            <Link
+                              to={`/news/${art.slug}`}
+                              className="font-editorial text-2xl sm:text-3xl font-bold hover:text-[#00652E] block leading-tight"
+                            >
+                              {art.title}
                             </Link>
+                          ) : (
+                            <h3 className="font-editorial text-2xl sm:text-3xl font-bold leading-tight">{art.title}</h3>
                           )}
-                        </div>
-                      </article>
-                    ))}
+                          <div className="text-xs opacity-70 font-mono-tabular">
+                            By {art.author || 'Editorial Desk'}
+                            {timeLabel ? ` · ${timeLabel}` : ''} · {readMins} min read
+                          </div>
+                          {art.image_url && (
+                            <figure className="space-y-1">
+                              <div className="aspect-[16/9] rounded overflow-hidden bg-neutral-100">
+                                <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
+                              </div>
+                              {art.image_rights && (
+                                <figcaption className="text-[11px] opacity-65 italic">{art.image_rights}</figcaption>
+                              )}
+                            </figure>
+                          )}
+                          {standfirst && (
+                            <p className="text-base font-semibold leading-relaxed opacity-95">{standfirst}</p>
+                          )}
+                          <div className="space-y-3 text-base leading-relaxed opacity-90">
+                            {paragraphs.map((para, pIdx) => (
+                              <p key={pIdx}>{para}</p>
+                            ))}
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-3 text-xs pt-2">
+                            {art.source_url && (
+                              <a
+                                href={art.source_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 font-semibold opacity-75 hover:opacity-100 hover:underline"
+                              >
+                                Original Source ({art.source_name}) <ExternalLink className="w-3 h-3" />
+                              </a>
+                            )}
+                            {art.slug && (
+                              <Link to={`/news/${art.slug}`} className="font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline ml-auto">
+                                Open Full Interactive Report →
+                              </Link>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
                   </div>
                 </div>
               ) : (
@@ -613,65 +788,156 @@ export function EPaperPage() {
                     }}
                     className={`epaper-print-page border rounded-lg p-6 sm:p-10 shadow-sm transition-transform ${sheetClass}`}
                   >
-                    <div className="border-b-2 border-[#00652E] pb-4 mb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-2">
+                    <div className="border-b-2 border-[#00652E] pb-4 mb-5 flex flex-col sm:flex-row sm:items-end justify-between gap-2">
                       <div>
                         <div className="font-editorial text-2xl sm:text-3xl font-extrabold text-[#00652E] dark:text-[#4ade80]">
                           MAHEEP NEWS PORTAL
                         </div>
                         <p className="text-xs opacity-75">
-                          सच के साथ, जनता के विश्वास के साथ · News from India &amp; Beyond
+                          सच के साथ, जनता के विश्वास के साथ · News from India &amp; Beyond · Detailed Broadsheet Edition
                         </p>
                       </div>
-                      <div className="text-left sm:text-right text-xs font-mono-tabular opacity-80">
+                      <div className="text-left sm:text-right text-xs font-mono-tabular opacity-85">
                         <div className="font-semibold">{activePage.sectionTitle}</div>
                         <div>
-                          Edition: {selectedEdition.edition_date} · Page {activePage.pageNumber}
+                          Edition: {selectedEdition.edition_date} · Page {activePage.pageNumber} of {pages.length} ·{' '}
+                          {activePage.articles.length} Stories
                         </div>
                       </div>
                     </div>
 
-                    {/* Newspaper Multi-Column Grid */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {activePage.articles.map((art, idx) => (
-                        <article
-                          key={`${art.title}-${idx}`}
-                          className={`pb-5 border-b border-current/15 ${idx === 0 ? 'md:col-span-2' : ''}`}
-                        >
-                          <div className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80] mb-1.5">
-                            {art.category_name}
-                            {art.state_name ? ` · ${art.state_name}` : ''} · {art.source_name}
-                          </div>
-                          <div className={idx === 0 ? 'grid grid-cols-1 md:grid-cols-12 gap-5 items-start' : ''}>
-                            {idx === 0 && art.image_url && (
-                              <div className="md:col-span-5 aspect-[4/3] rounded overflow-hidden bg-neutral-100">
-                                <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
-                              </div>
-                            )}
-                            <div className={idx === 0 && art.image_url ? 'md:col-span-7' : ''}>
-                              {art.slug ? (
-                                <Link
-                                  to={`/news/${art.slug}`}
-                                  className={`font-editorial font-bold hover:text-[#00652E] block leading-snug ${
-                                    idx === 0 ? 'text-2xl' : 'text-lg'
-                                  }`}
-                                >
-                                  {art.title}
-                                </Link>
-                              ) : (
-                                <h3 className={`font-editorial font-bold leading-snug ${idx === 0 ? 'text-2xl' : 'text-lg'}`}>
-                                  {art.title}
-                                </h3>
-                              )}
-                              <p className="mt-2 text-sm opacity-90 leading-relaxed">{art.summary}</p>
-                              <div className="mt-2 text-xs opacity-65">By {art.author || 'Editorial Desk'}</div>
+                    {/* Broadsheet Page Ad (Front Page Top / Inner Pages) */}
+                    {broadsheetAd && (
+                      <div className="mb-6">
+                        <BroadsheetSponsorBox ad={broadsheetAd} paperTheme={paperTheme} />
+                      </div>
+                    )}
+
+                    {/* Newspaper Detailed Multi-Column Grid */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-7">
+                      {activePage.articles.map((art, idx) => {
+                        const { standfirst, paragraphs, wordCount, readMins } = getDetailedStoryBody(
+                          art.summary,
+                          art.content,
+                        );
+                        const timeLabel = formatIndiaDateTime(art.published_at);
+                        const isLead = idx === 0;
+                        const metaParts = [
+                          art.category_name || 'News',
+                          art.state_name || '',
+                          art.subtopic || '',
+                          art.source_name || 'Maheep Desk',
+                        ].filter(Boolean);
+
+                        return (
+                          <article
+                            key={`${art.title}-${idx}`}
+                            className={`pb-6 border-b border-current/15 ${isLead ? 'md:col-span-2' : ''}`}
+                          >
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-[#00652E] dark:text-[#4ade80] mb-1">
+                              {metaParts.join(' · ')}
                             </div>
-                          </div>
-                        </article>
-                      ))}
+
+                            <div className={isLead ? 'grid grid-cols-1 md:grid-cols-12 gap-5 items-start' : 'space-y-3'}>
+                              {isLead && art.image_url && (
+                                <figure className="md:col-span-5 space-y-1">
+                                  <div className="aspect-[4/3] rounded overflow-hidden bg-neutral-100">
+                                    <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
+                                  </div>
+                                  {art.image_rights && (
+                                    <figcaption className="text-[10px] opacity-65 italic">{art.image_rights}</figcaption>
+                                  )}
+                                </figure>
+                              )}
+
+                              <div className={isLead && art.image_url ? 'md:col-span-7 space-y-2.5' : 'space-y-2.5'}>
+                                {art.slug ? (
+                                  <Link
+                                    to={`/news/${art.slug}`}
+                                    className={`font-editorial font-bold hover:text-[#00652E] block leading-snug ${
+                                      isLead ? 'text-2xl sm:text-[26px]' : 'text-lg sm:text-xl'
+                                    }`}
+                                  >
+                                    {art.title}
+                                  </Link>
+                                ) : (
+                                  <h3
+                                    className={`font-editorial font-bold leading-snug ${
+                                      isLead ? 'text-2xl sm:text-[26px]' : 'text-lg sm:text-xl'
+                                    }`}
+                                  >
+                                    {art.title}
+                                  </h3>
+                                )}
+
+                                <div className="text-[11px] opacity-70 font-mono-tabular">
+                                  By {art.author || 'Editorial Desk'}
+                                  {timeLabel ? ` · ${timeLabel}` : ''} · {wordCount} words ({readMins} min read)
+                                </div>
+
+                                {!isLead && idx <= 2 && art.image_url && (
+                                  <figure className="space-y-1 my-2">
+                                    <div className="aspect-[16/9] rounded overflow-hidden bg-neutral-100">
+                                      <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
+                                    </div>
+                                    {art.image_rights && (
+                                      <figcaption className="text-[10px] opacity-65 italic">
+                                        {art.image_rights}
+                                      </figcaption>
+                                    )}
+                                  </figure>
+                                )}
+
+                                {standfirst && (
+                                  <p className="text-sm font-semibold opacity-95 leading-relaxed">{standfirst}</p>
+                                )}
+
+                                <div className="space-y-2.5 text-sm opacity-90 leading-relaxed text-justify">
+                                  {paragraphs.map((para, pIdx) => (
+                                    <p
+                                      key={pIdx}
+                                      className={
+                                        isLead && pIdx === 0
+                                          ? 'first-letter:float-left first-letter:font-editorial first-letter:text-4xl first-letter:font-bold first-letter:mr-2 first-letter:leading-none first-letter:text-[#00652E]'
+                                          : ''
+                                      }
+                                    >
+                                      {para}
+                                    </p>
+                                  ))}
+                                </div>
+
+                                <div className="pt-1 flex flex-wrap items-center justify-between gap-2 text-xs">
+                                  {art.source_url ? (
+                                    <a
+                                      href={art.source_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1 opacity-75 hover:opacity-100 hover:underline font-medium"
+                                    >
+                                      Source: {art.source_name} <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  ) : (
+                                    <span className="opacity-65">Maheep Bureau Dispatch</span>
+                                  )}
+                                  {art.slug && (
+                                    <Link
+                                      to={`/news/${art.slug}`}
+                                      className="font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
+                                    >
+                                      Read Full Story →
+                                    </Link>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
                     </div>
 
                     <div className="mt-6 pt-3 border-t border-current/15 flex items-center justify-between text-xs opacity-65 font-mono-tabular">
-                      <span>Maheep News Portal · Digital Newspaper Edition</span>
+                      <span>Maheep News Portal · Detailed Digital Newspaper Edition</span>
                       <span>
                         Page {activePage.pageNumber} of {pages.length}
                       </span>

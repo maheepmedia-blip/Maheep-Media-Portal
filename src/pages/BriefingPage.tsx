@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { AdSlot } from '../components/AdSlot.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
@@ -264,6 +265,8 @@ export function BriefingPage() {
             ))}
           </div>
         </header>
+
+        <AdSlot placement="homepage_mid" />
 
         {/* TAB 1: ASK MAHEEP AI */}
         {tab === 'ask' && (

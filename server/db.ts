@@ -965,14 +965,15 @@ function seedInitialData(): void {
       const dateStr = getIndiaDateOffset(d);
       const dayArticles = db
         .prepare(`
-          SELECT a.id, a.title, a.slug, a.summary, a.image_url, a.source_name, a.author, a.language, a.published_at,
+          SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
                  c.name as category_name, c.slug as category_slug, s.name as state_name
           FROM articles a
           LEFT JOIN categories c ON c.id = a.category_id
           LEFT JOIN states s ON s.id = a.state_id
           WHERE a.status = 'published'
             AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
-          ORDER BY a.featured DESC, a.published_at DESC
+          ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.featured DESC, a.published_at DESC
+          LIMIT 40
         `)
         .all(dateStr) as Array<Record<string, unknown>>;
 
@@ -1121,6 +1122,71 @@ function seedInitialData(): void {
     setSetting('epaper_date_cleanup_v3', 'done');
   }
 
+  // Enrich all stored E-Paper editions with full multi-paragraph article content, image rights, subtopics, and source links
+  if (getSetting('epaper_detailed_v4', '') !== 'done') {
+    const existingEditions = db
+      .prepare('SELECT id, edition_date, content_json FROM editions')
+      .all() as Array<{ id: string; edition_date: string; content_json: string }>;
+
+    const findDayArticles = db.prepare(`
+      SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
+             c.name as category_name, c.slug as category_slug, s.name as state_name
+      FROM articles a
+      LEFT JOIN categories c ON c.id = a.category_id
+      LEFT JOIN states s ON s.id = a.state_id
+      WHERE a.status = 'published'
+        AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+      ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC, a.featured DESC, a.breaking DESC
+      LIMIT 40
+    `);
+
+    const findArticleByIdOrSlug = db.prepare(`
+      SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
+             c.name as category_name, c.slug as category_slug, s.name as state_name
+      FROM articles a
+      LEFT JOIN categories c ON c.id = a.category_id
+      LEFT JOIN states s ON s.id = a.state_id
+      WHERE a.id = ? OR a.slug = ?
+      LIMIT 1
+    `);
+
+    const updateEdition = db.prepare(
+      'UPDATE editions SET cover_image = ?, page_count = ?, article_count = ?, content_json = ? WHERE id = ?',
+    );
+    const updateEditionJsonOnly = db.prepare('UPDATE editions SET content_json = ? WHERE id = ?');
+
+    for (const ed of existingEditions) {
+      const dayArticles = findDayArticles.all(ed.edition_date) as Array<Record<string, unknown>>;
+      if (dayArticles.length > 0) {
+        const pages = buildEditionPagesPayload(ed.edition_date, dayArticles);
+        const cover = String(
+          dayArticles.find((a) => Boolean(a.image_url))?.image_url ||
+            '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+        );
+        updateEdition.run(cover, pages.length, dayArticles.length, JSON.stringify({ pages }), ed.id);
+      } else {
+        try {
+          const parsed = JSON.parse(ed.content_json || '{}') as { pages?: Array<{ articles?: Array<Record<string, unknown>> }> };
+          if (Array.isArray(parsed.pages)) {
+            for (const page of parsed.pages) {
+              if (!Array.isArray(page.articles)) continue;
+              page.articles = page.articles.map((art) => {
+                const match = findArticleByIdOrSlug.get(String(art.id || ''), String(art.slug || '')) as
+                  | Record<string, unknown>
+                  | undefined;
+                return match ? { ...art, ...match } : art;
+              });
+            }
+            updateEditionJsonOnly.run(JSON.stringify({ pages: parsed.pages }), ed.id);
+          }
+        } catch {
+          // keep existing JSON intact if malformed
+        }
+      }
+    }
+    setSetting('epaper_detailed_v4', 'done');
+  }
+
   // Ensure topic RSS feeds exist in existing DBs so Business, Sports, Tech, and Science stay stocked
   if (getSetting('rss_topic_feeds_v1', '') !== 'done') {
     const insertTopicRss = db.prepare(
@@ -1233,11 +1299,11 @@ function seedInitialData(): void {
 }
 
 export function buildEditionPagesPayload(dateStr: string, articles: Array<Record<string, unknown>>) {
-  const coverStories = articles.slice(0, 4);
+  const coverStories = articles.slice(0, 5);
   const usedIds = new Set(coverStories.map((a) => String(a.id || a.title || '')));
   const remaining = articles.filter((a) => !usedIds.has(String(a.id || a.title || '')));
 
-  const takeByCat = (slugs: string[], limit = 6) => {
+  const takeByCat = (slugs: string[], limit = 8) => {
     const picked = remaining
       .filter((a) => !usedIds.has(String(a.id || a.title || '')) && slugs.includes(String(a.category_slug || '')))
       .slice(0, limit);
@@ -1245,11 +1311,11 @@ export function buildEditionPagesPayload(dateStr: string, articles: Array<Record
     return picked;
   };
 
-  const nationalStories = takeByCat(['national', 'international', 'editorial'], 6);
-  const stateStories = takeByCat(['state'], 6);
-  const bizSports = takeByCat(['business', 'sports'], 6);
-  const techEduSci = takeByCat(['technology', 'education', 'science', 'entertainment'], 6);
-  const moreStories = remaining.filter((a) => !usedIds.has(String(a.id || a.title || ''))).slice(0, 6);
+  const nationalStories = takeByCat(['national', 'international', 'editorial'], 8);
+  const stateStories = takeByCat(['state'], 8);
+  const bizSports = takeByCat(['business', 'sports'], 8);
+  const techEduSci = takeByCat(['technology', 'education', 'science', 'entertainment'], 8);
+  const moreStories = remaining.filter((a) => !usedIds.has(String(a.id || a.title || ''))).slice(0, 8);
 
   const candidates = [
     { sectionTitle: 'Front Page · मुख्य पृष्ठ', subtitle: `Edition Date: ${dateStr}`, articles: coverStories },

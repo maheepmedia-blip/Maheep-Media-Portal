@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { AdSlot } from '../components/AdSlot.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
@@ -112,6 +113,10 @@ export function BusinessSportsPage() {
               ))}
             </div>
           </div>
+        </div>
+
+        <div className="mt-6">
+          <AdSlot placement="header_banner" />
         </div>
 
         {loading ? (

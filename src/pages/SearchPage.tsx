@@ -1,6 +1,7 @@
 import { Search } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { AdSlot } from '../components/AdSlot.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
@@ -156,6 +157,8 @@ export function SearchPage() {
             </div>
           </div>
         </div>
+
+        <AdSlot placement="header_banner" />
 
         {loading ? (
           <p className="text-sm text-neutral-500">Searching archive...</p>

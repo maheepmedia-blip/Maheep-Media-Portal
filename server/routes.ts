@@ -93,7 +93,14 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#39;');
 }
 
-const VALID_AD_PLACEMENTS = ['header_banner', 'homepage_mid', 'sidebar', 'article_inline', 'epaper_banner'] as const;
+const VALID_AD_PLACEMENTS = [
+  'all_slots',
+  'header_banner',
+  'homepage_mid',
+  'sidebar',
+  'article_inline',
+  'epaper_banner',
+] as const;
 
 function getTodayIndiaDate(): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -604,30 +611,48 @@ export function registerApiRoutes(app: Express): void {
   app.get('/api/ads', (req, res) => {
     const placement = String(req.query.placement || '').trim();
     const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : null;
+    const allowFallback = req.query.fallback !== '0';
     const todayIst = getTodayIndiaDate();
 
-    const conditions = [
+    const baseConditions = [
       'active = 1',
       "(start_date = '' OR date(start_date) <= date(?))",
       "(end_date = '' OR date(end_date) >= date(?))",
     ];
-    const params: unknown[] = [todayIst, todayIst];
+    const baseParams: unknown[] = [todayIst, todayIst];
+
+    if (lang) {
+      baseConditions.push("(language = 'all' OR language = ?)");
+      baseParams.push(lang);
+    }
+
+    let ads: unknown[] = [];
+    let matchedMode: 'exact' | 'fallback' = 'exact';
 
     if (placement && (VALID_AD_PLACEMENTS as readonly string[]).includes(placement)) {
-      conditions.push('placement = ?');
-      params.push(placement);
-    }
-    if (lang) {
-      conditions.push("(language = 'all' OR language = ?)");
-      params.push(lang);
-    }
+      const slotConditions = [...baseConditions, "(placement = ? OR placement = 'all_slots')"];
+      ads = db
+        .prepare(
+          `SELECT * FROM ads WHERE ${slotConditions.join(' AND ')} ORDER BY CASE WHEN placement = ? THEN 0 ELSE 1 END, created_at DESC LIMIT 20`,
+        )
+        .all(...baseParams, placement, placement);
 
-    const ads = db
-      .prepare(`SELECT * FROM ads WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT 20`)
-      .all(...params);
+      // If no exact/all_slots ad matches for this placement, surface active portal ads across slots
+      // so any active advertisement created in Admin Desk displays on both Website and E-Paper.
+      if (ads.length === 0 && allowFallback) {
+        ads = db
+          .prepare(`SELECT * FROM ads WHERE ${baseConditions.join(' AND ')} ORDER BY created_at DESC LIMIT 20`)
+          .all(...baseParams);
+        if (ads.length > 0) matchedMode = 'fallback';
+      }
+    } else {
+      ads = db
+        .prepare(`SELECT * FROM ads WHERE ${baseConditions.join(' AND ')} ORDER BY created_at DESC LIMIT 20`)
+        .all(...baseParams);
+    }
 
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ ads });
+    res.json({ ads, matchedMode });
   });
 
   app.post('/api/ads/:id/track', (req, res) => {

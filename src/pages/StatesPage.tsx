@@ -1,6 +1,7 @@
 import { MapPin, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { AdSlot } from '../components/AdSlot.tsx';
 import { IndiaNewsMap } from '../components/IndiaNewsMap.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
@@ -100,6 +101,8 @@ export function StatesPage() {
 
         {/* Interactive India News Map & State Spotlight */}
         <IndiaNewsMap states={states} selectedSlug={slug} />
+
+        <AdSlot placement="homepage_mid" />
 
         {/* Search & Filter Directory */}
         <section className="space-y-4">

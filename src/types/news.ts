@@ -97,11 +97,16 @@ export interface EditionPage {
     title: string;
     slug?: string;
     summary: string;
+    content?: string;
     source_name: string;
+    source_url?: string;
     author: string;
     category_name: string;
     state_name?: string;
+    subtopic?: string;
     image_url?: string;
+    image_rights?: string;
+    views?: number;
     published_at?: string;
   }>;
 }
@@ -166,6 +171,7 @@ export interface AdminUser {
 }
 
 export type AdPlacement =
+  | 'all_slots'
   | 'header_banner'
   | 'homepage_mid'
   | 'sidebar'

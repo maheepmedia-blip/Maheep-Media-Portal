@@ -9,18 +9,19 @@ interface AdminAdsPanelProps {
 }
 
 const PLACEMENT_LABELS: Record<AdPlacement, string> = {
+  all_slots: 'Website & E-Paper (Show Everywhere)',
   header_banner: 'Homepage Top Leaderboard',
   homepage_mid: 'Homepage Mid-Page Banner',
   sidebar: 'Homepage Right Sidebar Card',
   article_inline: 'Article Page Inline Sponsor',
-  epaper_banner: 'E-Paper Reader Banner',
+  epaper_banner: 'E-Paper Reader & Broadsheet',
 };
 
 export function AdminAdsPanel({ token, ads, onRefresh }: AdminAdsPanelProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [advertiser, setAdvertiser] = useState('');
-  const [placement, setPlacement] = useState<AdPlacement>('sidebar');
+  const [placement, setPlacement] = useState<AdPlacement>('all_slots');
   const [language, setLanguage] = useState<'all' | 'en' | 'hi'>('all');
   const [imageUrl, setImageUrl] = useState('');
   const [targetUrl, setTargetUrl] = useState('');
@@ -39,7 +40,7 @@ export function AdminAdsPanel({ token, ads, onRefresh }: AdminAdsPanelProps) {
     setEditingId(null);
     setTitle('');
     setAdvertiser('');
-    setPlacement('sidebar');
+    setPlacement('all_slots');
     setLanguage('all');
     setImageUrl('');
     setTargetUrl('');
@@ -183,7 +184,7 @@ export function AdminAdsPanel({ token, ads, onRefresh }: AdminAdsPanelProps) {
                 {editingId ? 'Edit Advertisement' : 'Create New Advertisement'}
               </h2>
               <p className="text-xs text-neutral-500">
-                Publish sponsored banners across Homepage, Article Pages, and the E-Paper Reader.
+                Publish sponsored banners across Website pages and inside the E-Paper Broadsheet &amp; PDF editions. Active ads automatically appear everywhere if no slot-specific creative overrides them.
               </p>
             </div>
           </div>
@@ -385,7 +386,7 @@ export function AdminAdsPanel({ token, ads, onRefresh }: AdminAdsPanelProps) {
         <div className="px-5 py-3.5 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
           <h3 className="text-sm font-bold">Configured Advertisements ({ads.length})</h3>
           <span className="text-xs text-neutral-500">
-            Active ads appear automatically on their assigned portal slots
+            Active ads appear automatically across Website pages and inside E-Paper editions
           </span>
         </div>
 

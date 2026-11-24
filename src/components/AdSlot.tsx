@@ -66,7 +66,11 @@ export function AdSlot({ placement, className = '' }: AdSlotProps) {
   };
 
   const isSidebar = placement === 'sidebar';
-  const isWide = placement === 'header_banner' || placement === 'homepage_mid' || placement === 'epaper_banner';
+  const isWide =
+    placement === 'header_banner' ||
+    placement === 'homepage_mid' ||
+    placement === 'epaper_banner' ||
+    placement === 'all_slots';
 
   const cardInner = isSidebar ? (
     <div className="border border-neutral-200 dark:border-neutral-800 rounded-lg overflow-hidden bg-white dark:bg-neutral-900">

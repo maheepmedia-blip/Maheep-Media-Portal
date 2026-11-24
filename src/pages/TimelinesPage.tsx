@@ -1,5 +1,6 @@
 import { BarChart2, Clock, ExternalLink, History } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { AdSlot } from '../components/AdSlot.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import type { ElectionUpdate, TimelineItem } from '../types/news.ts';
@@ -49,6 +50,8 @@ export function TimelinesPage() {
             Follow multi-stage national developments from inception to recent updates, with primary source attribution.
           </p>
         </header>
+
+        <AdSlot placement="header_banner" />
 
         {loading ? (
           <div className="text-sm text-neutral-500">Loading timelines and public records...</div>
