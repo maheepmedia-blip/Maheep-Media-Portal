@@ -368,6 +368,86 @@ export function initDatabase(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_system_errors_created ON system_errors(resolved, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS reader_follows (
+      id TEXT PRIMARY KEY,
+      reader_id TEXT NOT NULL REFERENCES reader_users(id) ON DELETE CASCADE,
+      follow_type TEXT NOT NULL CHECK (follow_type IN ('category', 'state', 'author')),
+      target_slug TEXT NOT NULL,
+      target_label TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(reader_id, follow_type, target_slug)
+    );
+
+    CREATE TABLE IF NOT EXISTS reader_epaper_bookmarks (
+      id TEXT PRIMARY KEY,
+      reader_id TEXT NOT NULL REFERENCES reader_users(id) ON DELETE CASCADE,
+      edition_date TEXT NOT NULL,
+      page_number INTEGER NOT NULL DEFAULT 1,
+      section_title TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(reader_id, edition_date, page_number)
+    );
+
+    CREATE TABLE IF NOT EXISTS polls (
+      id TEXT PRIMARY KEY,
+      question TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'National',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS poll_options (
+      id TEXT PRIMARY KEY,
+      poll_id TEXT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      votes INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS poll_votes (
+      id TEXT PRIMARY KEY,
+      poll_id TEXT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+      voter_key TEXT NOT NULL,
+      option_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(poll_id, voter_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS news_timelines (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      summary TEXT NOT NULL DEFAULT '',
+      topic_tag TEXT NOT NULL DEFAULT 'National',
+      active INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS timeline_events (
+      id TEXT PRIMARY KEY,
+      timeline_id TEXT NOT NULL REFERENCES news_timelines(id) ON DELETE CASCADE,
+      event_date TEXT NOT NULL,
+      headline TEXT NOT NULL,
+      details TEXT NOT NULL DEFAULT '',
+      source_name TEXT NOT NULL DEFAULT 'Maheep Editorial Desk',
+      source_url TEXT DEFAULT '',
+      article_id TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS election_updates (
+      id TEXT PRIMARY KEY,
+      region_title TEXT NOT NULL,
+      phase_label TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'Scheduled / Official Tracker',
+      turnout_pct REAL NOT NULL DEFAULT 0,
+      total_seats INTEGER NOT NULL DEFAULT 0,
+      leading_parties_json TEXT NOT NULL DEFAULT '[]',
+      source_name TEXT NOT NULL DEFAULT 'Election Commission of India',
+      source_url TEXT DEFAULT 'https://eci.gov.in',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Non-destructive column upgrades for existing production SQLite databases
@@ -378,6 +458,12 @@ export function initDatabase(): void {
   ensureColumn('articles', 'ai_audit_json', "TEXT DEFAULT '{}'");
   ensureColumn('articles', 'breaking_candidate', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('articles', 'preview_token', "TEXT DEFAULT ''");
+  ensureColumn('articles', 'image_rights', "TEXT DEFAULT 'Editorial Attribution'");
+
+  ensureColumn('reader_users', 'streak_days', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('reader_users', 'last_read_date', "TEXT DEFAULT ''");
+  ensureColumn('reader_users', 'last_epaper_edition', "TEXT DEFAULT ''");
+  ensureColumn('reader_users', 'last_epaper_page', 'INTEGER NOT NULL DEFAULT 1');
 
   ensureColumn('newsletter_subscribers', 'confirmed', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('newsletter_subscribers', 'confirm_token', "TEXT DEFAULT ''");
@@ -1078,6 +1164,71 @@ function seedInitialData(): void {
     for (const [id, name, slug, roleTitle, beat, bio, email] of baseAuthors) {
       insertAuthor.run(id, name, slug, roleTitle, beat, bio, email);
     }
+  }
+
+  const pollCount = (db.prepare('SELECT COUNT(*) as count FROM polls').get() as { count: number }).count;
+  if (pollCount === 0) {
+    db.prepare('INSERT INTO polls (id, question, category, active) VALUES (?, ?, ?, 1)').run(
+      'poll-infra-priority',
+      'Which public priority deserves the highest state allocation this quarter?',
+      'National Policy',
+    );
+    const insOpt = db.prepare('INSERT INTO poll_options (id, poll_id, label, votes) VALUES (?, ?, ?, ?)');
+    insOpt.run('opt-1', 'poll-infra-priority', 'Rail & Expressway Connectivity', 42);
+    insOpt.run('opt-2', 'poll-infra-priority', 'Rural Healthcare & Primary Clinics', 58);
+    insOpt.run('opt-3', 'poll-infra-priority', 'Clean Energy & Grid Modernization', 34);
+    insOpt.run('opt-4', 'poll-infra-priority', 'Technical & Skill Education', 46);
+  }
+
+  const tlCount = (db.prepare('SELECT COUNT(*) as count FROM news_timelines').get() as { count: number }).count;
+  if (tlCount === 0) {
+    db.prepare('INSERT INTO news_timelines (id, title, slug, summary, topic_tag, active) VALUES (?, ?, ?, ?, ?, 1)').run(
+      'tl-dpi-india',
+      'India Digital Public Infrastructure & Semiconductor Push',
+      'india-digital-infrastructure-timeline',
+      'Chronological milestones tracking UPI expansion, ONDC adoption, and India Semiconductor Mission fabrication approvals.',
+      'Technology & Economy',
+    );
+    const insEv = db.prepare(`
+      INSERT INTO timeline_events (id, timeline_id, event_date, headline, details, source_name, source_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    insEv.run('ev-1', 'tl-dpi-india', '2024-02-29', 'Cabinet Approves Multiple Chip Fab & ATMP Units', 'Union Cabinet clears commercial semiconductor fabrication and assembly facilities in Gujarat and Assam under India Semiconductor Mission.', 'PIB India', 'https://pib.gov.in');
+    insEv.run('ev-2', 'tl-dpi-india', '2025-01-15', 'UPI Surpasses New Cross-Border Merchant Milestones', 'NPCI expands instant QR interoperability across partner corridors in Asia, Gulf, and Europe.', 'NPCI / RBI Reference', 'https://www.npci.org.in');
+    insEv.run('ev-3', 'tl-dpi-india', getIndiaDateOffset(1), 'Grid & Digital Corridors Expand Across Tier-2 Cities', 'State industrial portals integrate real-time logistics and payment rails for MSMEs.', 'Maheep National Desk', '');
+
+    db.prepare('INSERT INTO news_timelines (id, title, slug, summary, topic_tag, active) VALUES (?, ?, ?, ?, ?, 1)').run(
+      'tl-isro-missions',
+      'ISRO Space & Gaganyaan Milestone Tracker',
+      'isro-space-missions-timeline',
+      'Verified chronological log of ISRO orbital launches, Gaganyaan human-flight testing, and deep-space exploration milestones.',
+      'Science & Space',
+    );
+    insEv.run('ev-4', 'tl-isro-missions', '2023-08-23', 'Chandrayaan-3 Vikram Lander Soft-Landing Success', 'India becomes the fourth nation to soft-land on the Moon and first near the lunar south pole.', 'ISRO Official', 'https://www.isro.gov.in');
+    insEv.run('ev-5', 'tl-isro-missions', '2024-12-30', 'SpaDeX Autonomous Docking Demonstration Mission', 'ISRO launches Space Docking Experiment validating orbital rendezvous technology for future stations.', 'ISRO Official', 'https://www.isro.gov.in');
+    insEv.run('ev-6', 'tl-isro-missions', getIndiaDateOffset(2), 'Gaganyaan & Launch Pad Readiness Reviews Continue', 'Propulsion and crew-escape qualification milestones progress at Sriharikota and Bengaluru.', 'Maheep Science Desk', '');
+  }
+
+  const elCount = (db.prepare('SELECT COUNT(*) as count FROM election_updates').get() as { count: number }).count;
+  if (elCount === 0) {
+    db.prepare(`
+      INSERT INTO election_updates (id, region_title, phase_label, status, turnout_pct, total_seats, leading_parties_json, source_name, source_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'el-lok-sabha-ref',
+      '18th Lok Sabha General Reference Tracker',
+      '543 Parliamentary Constituencies',
+      'Verified ECI Certified Archive',
+      65.79,
+      543,
+      JSON.stringify([
+        { party: 'NDA Alliance', seats: 293, color: '#00652E' },
+        { party: 'INDIA Bloc', seats: 234, color: '#159B42' },
+        { party: 'Others / Independents', seats: 16, color: '#6b7280' },
+      ]),
+      'Election Commission of India (Official Archive)',
+      'https://results.eci.gov.in',
+    );
   }
 }
 

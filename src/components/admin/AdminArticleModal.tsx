@@ -49,6 +49,7 @@ export function AdminArticleModal({
   const [summary, setSummary] = useState(article?.summary || '');
   const [content, setContent] = useState(article?.content || '');
   const [imageUrl, setImageUrl] = useState(article?.image_url || '');
+  const [imageRights, setImageRights] = useState(article?.image_rights || 'Editorial Attribution');
   const [sourceName, setSourceName] = useState(article?.source_name || 'Maheep News Desk');
   const [sourceUrl, setSourceUrl] = useState(article?.source_url || '');
   const [author, setAuthor] = useState(article?.author || 'Maheep Editorial Desk');
@@ -238,6 +239,7 @@ export function AdminArticleModal({
           summary,
           content,
           image_url: imageUrl,
+          image_rights: imageRights,
           source_name: sourceName,
           source_url: sourceUrl,
           author,
@@ -259,6 +261,26 @@ export function AdminArticleModal({
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEmergencyUnpublish = async () => {
+    if (!article?.id) return;
+    if (!window.confirm('Immediately take down and archive this live article?')) return;
+    setSaving(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/admin/articles/${article.id}/emergency-unpublish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reason: changeNote || 'Emergency editorial takedown' }),
+      });
+      if (!res.ok) throw new Error('Emergency unpublish failed');
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Take down error');
     } finally {
       setSaving(false);
     }
@@ -529,7 +551,7 @@ export function AdminArticleModal({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-semibold mb-1">Hero Image URL or Upload</label>
                 <div className="flex gap-2">
@@ -546,6 +568,20 @@ export function AdminArticleModal({
                     <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleImageUpload} className="hidden" />
                   </label>
                 </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1">Image Rights &amp; Credit</label>
+                <select
+                  value={imageRights}
+                  onChange={(e) => setImageRights(e.target.value)}
+                  className="w-full px-3 py-2 text-sm rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                >
+                  <option value="Editorial Attribution">Editorial Attribution</option>
+                  <option value="Staff Photography">Staff Photography (Maheep Media)</option>
+                  <option value="Press Release / PIB">Press Release / Official PIB</option>
+                  <option value="Creative Commons / Public Domain">Creative Commons / Public Domain</option>
+                  <option value="Licensed Wire Service">Licensed Wire Service</option>
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-semibold mb-1">Original Source Attribution URL</label>
@@ -621,7 +657,17 @@ export function AdminArticleModal({
                 </label>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                {isEdit && status === 'published' && (
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={handleEmergencyUnpublish}
+                    className="px-4 py-2 rounded-md bg-[#DF2525] hover:bg-red-700 text-white text-xs font-semibold disabled:opacity-60"
+                  >
+                    Emergency Unpublish
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={onClose}

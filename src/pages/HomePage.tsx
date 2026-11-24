@@ -1,8 +1,9 @@
-import { ArrowRight, BookOpen, Download, MapPin, TrendingUp } from 'lucide-react';
+import { ArrowRight, BookOpen, Download, Headphones, History, MapPin, TrendingUp } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
+import { PollWidget } from '../components/PollWidget.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
@@ -196,6 +197,33 @@ export function HomePage() {
                     </div>
                   </div>
                 )}
+
+                <PollWidget />
+
+                <div className="border border-neutral-200 dark:border-neutral-800 rounded-lg p-4 bg-white dark:bg-neutral-900 space-y-2.5 text-xs">
+                  <Link
+                    to="/briefing"
+                    className="flex items-center justify-between gap-2 font-semibold text-neutral-900 dark:text-neutral-100 hover:text-[#00652E]"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Headphones className="w-4 h-4 text-[#00652E] dark:text-[#4ade80]" />
+                      60s Audio Briefing &amp; Ask AI
+                    </span>
+                    <span>→</span>
+                  </Link>
+                  <div className="border-t border-neutral-100 dark:border-neutral-800 pt-2.5">
+                    <Link
+                      to="/timelines"
+                      className="flex items-center justify-between gap-2 font-semibold text-neutral-900 dark:text-neutral-100 hover:text-[#00652E]"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <History className="w-4 h-4 text-[#00652E] dark:text-[#4ade80]" />
+                        News Timelines &amp; Public Data
+                      </span>
+                      <span>→</span>
+                    </Link>
+                  </div>
+                </div>
 
                 <AdSlot placement="sidebar" />
               </aside>

@@ -81,7 +81,16 @@ export function registerReaderAccount(name: string, email: string, password: str
   const token = signReaderToken({ sub: id, email: cleanEmail, name: cleanName });
   return {
     token,
-    user: { id, name: cleanName, email: cleanEmail, preferred_language: 'all', font_size: 'md' },
+    user: {
+      id,
+      name: cleanName,
+      email: cleanEmail,
+      preferred_language: 'all',
+      font_size: 'md',
+      streak_days: 0,
+      last_epaper_edition: '',
+      last_epaper_page: 1,
+    },
   };
 }
 
@@ -96,6 +105,9 @@ export function authenticateReaderAccount(email: string, password: string) {
         password_salt: string;
         preferred_language: 'all' | 'en' | 'hi';
         font_size: 'sm' | 'md' | 'lg';
+        streak_days?: number;
+        last_epaper_edition?: string;
+        last_epaper_page?: number;
       }
     | undefined;
 
@@ -111,6 +123,9 @@ export function authenticateReaderAccount(email: string, password: string) {
       email: user.email,
       preferred_language: user.preferred_language,
       font_size: user.font_size,
+      streak_days: user.streak_days || 0,
+      last_epaper_edition: user.last_epaper_edition || '',
+      last_epaper_page: user.last_epaper_page || 1,
     },
   };
 }

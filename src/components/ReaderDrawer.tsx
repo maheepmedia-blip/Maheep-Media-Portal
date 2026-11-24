@@ -1,8 +1,20 @@
-import { Bell, BellOff, Bookmark, Clock, LogOut, Trash2, User, X } from 'lucide-react';
+import {
+  Bell,
+  BellOff,
+  Bookmark,
+  BookOpen,
+  Clock,
+  Flame,
+  Heart,
+  LogOut,
+  Trash2,
+  User,
+  X,
+} from 'lucide-react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { type FontSizeScale, type LanguageFilter, usePortal } from '../context/PortalContext.tsx';
-import type { Article } from '../types/news.ts';
+import type { Article, ReaderEpaperBookmark, ReaderFollow } from '../types/news.ts';
 import { formatIndiaDate } from '../utils/date.ts';
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
@@ -15,6 +27,15 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
     outputArray[i] = rawData.charCodeAt(i);
   }
   return outputArray;
+}
+
+interface WeeklyReport {
+  streakDays: number;
+  lastEpaperEdition: string;
+  lastEpaperPage: number;
+  articlesReadLast7Days: number;
+  totalBookmarks: number;
+  topCategories: Array<{ category: string; count: number }>;
 }
 
 export function ReaderDrawer() {
@@ -32,7 +53,7 @@ export function ReaderDrawer() {
   } = usePortal();
 
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [tab, setTab] = useState<'bookmarks' | 'history' | 'prefs'>('bookmarks');
+  const [tab, setTab] = useState<'bookmarks' | 'history' | 'follows' | 'prefs'>('bookmarks');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -41,7 +62,10 @@ export function ReaderDrawer() {
   const [loading, setLoading] = useState(false);
 
   const [bookmarks, setBookmarks] = useState<Article[]>([]);
+  const [epaperBookmarks, setEpaperBookmarks] = useState<ReaderEpaperBookmark[]>([]);
   const [history, setHistory] = useState<Array<Article & { read_at?: string }>>([]);
+  const [follows, setFollows] = useState<ReaderFollow[]>([]);
+  const [weeklyReport, setWeeklyReport] = useState<WeeklyReport | null>(null);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const [profileName, setProfileName] = useState(readerUser?.name || '');
@@ -52,19 +76,20 @@ export function ReaderDrawer() {
 
   const loadReaderData = useCallback(async () => {
     if (!readerToken) return;
+    const headers = { Authorization: `Bearer ${readerToken}` };
     try {
-      const [bRes, hRes] = await Promise.all([
-        fetch('/api/reader/bookmarks', { headers: { Authorization: `Bearer ${readerToken}` } }),
-        fetch('/api/reader/history', { headers: { Authorization: `Bearer ${readerToken}` } }),
+      const [bRes, hRes, fRes, epRes, wRes] = await Promise.all([
+        fetch('/api/reader/bookmarks', { headers }),
+        fetch('/api/reader/history', { headers }),
+        fetch('/api/reader/follows', { headers }),
+        fetch('/api/reader/epaper-bookmarks', { headers }),
+        fetch('/api/reader/weekly-report', { headers }),
       ]);
-      if (bRes.ok) {
-        const bJson = await bRes.json();
-        setBookmarks(bJson.bookmarks || []);
-      }
-      if (hRes.ok) {
-        const hJson = await hRes.json();
-        setHistory(hJson.history || []);
-      }
+      if (bRes.ok) setBookmarks((await bRes.json()).bookmarks || []);
+      if (hRes.ok) setHistory((await hRes.json()).history || []);
+      if (fRes.ok) setFollows((await fRes.json()).follows || []);
+      if (epRes.ok) setEpaperBookmarks((await epRes.json()).bookmarks || []);
+      if (wRes.ok) setWeeklyReport(await wRes.json());
     } catch {
       // Ignore transient error
     }
@@ -118,9 +143,25 @@ export function ReaderDrawer() {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${readerToken}` },
     });
-    if (res.ok) {
-      setBookmarks((prev) => prev.filter((b) => b.id !== articleId));
-    }
+    if (res.ok) setBookmarks((prev) => prev.filter((b) => b.id !== articleId));
+  };
+
+  const removeEpaperBookmark = async (id: string) => {
+    if (!readerToken) return;
+    const res = await fetch(`/api/reader/epaper-bookmarks/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${readerToken}` },
+    });
+    if (res.ok) setEpaperBookmarks((prev) => prev.filter((b) => b.id !== id));
+  };
+
+  const removeFollow = async (follow: ReaderFollow) => {
+    if (!readerToken) return;
+    const res = await fetch(`/api/reader/follows/${follow.follow_type}/${encodeURIComponent(follow.target_slug)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${readerToken}` },
+    });
+    if (res.ok) setFollows((prev) => prev.filter((f) => f.id !== follow.id));
   };
 
   const savePreferences = async (nextLang: LanguageFilter, nextFont: FontSizeScale) => {
@@ -236,7 +277,7 @@ export function ReaderDrawer() {
             </div>
           )}
 
-          {/* Browser Push & Reading Accessibility (Always available even without account) */}
+          {/* Browser Push & Reading Accessibility */}
           <div className="p-4 rounded-lg border border-neutral-200 dark:border-neutral-800 space-y-3 bg-neutral-50 dark:bg-neutral-950">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -284,7 +325,7 @@ export function ReaderDrawer() {
               <div>
                 <h3 className="text-sm font-bold text-neutral-900 dark:text-white">Optional Reader Account</h3>
                 <p className="text-xs text-neutral-500 mt-0.5">
-                  Sign in optionally to save bookmarks, track reading history, and sync language preferences. All news remains free without signing in.
+                  Sign in optionally to save articles, E-Paper pages, follows, reading streaks, and weekly digest preferences.
                 </p>
               </div>
 
@@ -355,7 +396,15 @@ export function ReaderDrawer() {
             <div className="space-y-4">
               <div className="flex items-center justify-between p-3 rounded-lg bg-[#EAF5E5]/60 dark:bg-neutral-800">
                 <div>
-                  <div className="text-sm font-bold">{readerUser.name}</div>
+                  <div className="text-sm font-bold flex items-center gap-2">
+                    <span>{readerUser.name}</span>
+                    {Boolean(weeklyReport?.streakDays || readerUser.streak_days) && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-mono-tabular text-[#00652E] dark:text-[#4ade80]">
+                        <Flame className="w-3.5 h-3.5 text-amber-500" />
+                        {weeklyReport?.streakDays ?? readerUser.streak_days}d streak
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-neutral-500">{readerUser.email}</div>
                 </div>
                 <button
@@ -367,20 +416,62 @@ export function ReaderDrawer() {
                 </button>
               </div>
 
-              <div className="flex border-b border-neutral-200 dark:border-neutral-800 text-xs font-semibold gap-4">
+              {/* Weekly Reading Report & Resume E-Paper */}
+              {weeklyReport && (
+                <div className="p-3 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 space-y-2 text-xs">
+                  <div className="font-bold text-neutral-800 dark:text-neutral-200">
+                    Your Weekly Reading Summary
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 font-mono-tabular text-center">
+                    <div className="p-2 rounded bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
+                      <div className="text-base font-bold text-[#00652E] dark:text-[#4ade80]">
+                        {weeklyReport.articlesReadLast7Days}
+                      </div>
+                      <div className="text-[10px] text-neutral-500">7d Reads</div>
+                    </div>
+                    <div className="p-2 rounded bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
+                      <div className="text-base font-bold text-[#00652E] dark:text-[#4ade80]">
+                        {weeklyReport.streakDays}
+                      </div>
+                      <div className="text-[10px] text-neutral-500">Day Streak</div>
+                    </div>
+                    <div className="p-2 rounded bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
+                      <div className="text-base font-bold text-[#00652E] dark:text-[#4ade80]">
+                        {weeklyReport.totalBookmarks}
+                      </div>
+                      <div className="text-[10px] text-neutral-500">Saved</div>
+                    </div>
+                  </div>
+                  {weeklyReport.lastEpaperEdition && (
+                    <Link
+                      to={`/epaper?date=${weeklyReport.lastEpaperEdition}&page=${weeklyReport.lastEpaperPage}`}
+                      onClick={() => setReaderDrawerOpen(false)}
+                      className="flex items-center justify-between pt-1 text-[#00652E] dark:text-[#4ade80] font-semibold hover:underline"
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        <BookOpen className="w-3.5 h-3.5" />
+                        Resume E-Paper ({weeklyReport.lastEpaperEdition} · P.{weeklyReport.lastEpaperPage})
+                      </span>
+                      <span>→</span>
+                    </Link>
+                  )}
+                </div>
+              )}
+
+              <div className="flex border-b border-neutral-200 dark:border-neutral-800 text-xs font-semibold gap-3 overflow-x-auto">
                 <button
                   type="button"
                   onClick={() => setTab('bookmarks')}
-                  className={`pb-2 border-b-2 inline-flex items-center gap-1 ${
+                  className={`pb-2 border-b-2 inline-flex items-center gap-1 whitespace-nowrap ${
                     tab === 'bookmarks' ? 'border-[#00652E] text-[#00652E]' : 'border-transparent text-neutral-500'
                   }`}
                 >
-                  <Bookmark className="w-3.5 h-3.5" /> Saved ({bookmarks.length})
+                  <Bookmark className="w-3.5 h-3.5" /> Saved ({bookmarks.length + epaperBookmarks.length})
                 </button>
                 <button
                   type="button"
                   onClick={() => setTab('history')}
-                  className={`pb-2 border-b-2 inline-flex items-center gap-1 ${
+                  className={`pb-2 border-b-2 inline-flex items-center gap-1 whitespace-nowrap ${
                     tab === 'history' ? 'border-[#00652E] text-[#00652E]' : 'border-transparent text-neutral-500'
                   }`}
                 >
@@ -388,8 +479,17 @@ export function ReaderDrawer() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setTab('follows')}
+                  className={`pb-2 border-b-2 inline-flex items-center gap-1 whitespace-nowrap ${
+                    tab === 'follows' ? 'border-[#00652E] text-[#00652E]' : 'border-transparent text-neutral-500'
+                  }`}
+                >
+                  <Heart className="w-3.5 h-3.5" /> Follows ({follows.length})
+                </button>
+                <button
+                  type="button"
                   onClick={() => setTab('prefs')}
-                  className={`pb-2 border-b-2 ${
+                  className={`pb-2 border-b-2 whitespace-nowrap ${
                     tab === 'prefs' ? 'border-[#00652E] text-[#00652E]' : 'border-transparent text-neutral-500'
                   }`}
                 >
@@ -398,12 +498,43 @@ export function ReaderDrawer() {
               </div>
 
               {tab === 'bookmarks' && (
-                <div className="space-y-2.5">
-                  {bookmarks.length === 0 ? (
-                    <p className="text-xs text-neutral-500">No saved stories yet. Click Save on any article to bookmark it.</p>
+                <div className="space-y-3">
+                  {epaperBookmarks.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="text-[11px] font-bold text-neutral-500">Saved E-Paper Pages</div>
+                      {epaperBookmarks.map((eb) => (
+                        <div
+                          key={eb.id}
+                          className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-2 text-xs"
+                        >
+                          <Link
+                            to={`/epaper?date=${eb.edition_date}&page=${eb.page_number}`}
+                            onClick={() => setReaderDrawerOpen(false)}
+                            className="font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
+                          >
+                            {eb.edition_date} · Page {eb.page_number} ({eb.section_title})
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => removeEpaperBookmark(eb.id)}
+                            className="p-1 text-neutral-400 hover:text-[#DF2525]"
+                            aria-label="Remove E-Paper page bookmark"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {bookmarks.length === 0 && epaperBookmarks.length === 0 ? (
+                    <p className="text-xs text-neutral-500">No saved stories yet. Click Save on any article or E-Paper page.</p>
                   ) : (
                     bookmarks.map((b) => (
-                      <div key={b.id} className="p-3 rounded border border-neutral-200 dark:border-neutral-800 flex items-start justify-between gap-2">
+                      <div
+                        key={b.id}
+                        className="p-3 rounded border border-neutral-200 dark:border-neutral-800 flex items-start justify-between gap-2"
+                      >
                         <div>
                           <Link
                             to={`/news/${b.slug}`}
@@ -449,6 +580,47 @@ export function ReaderDrawer() {
                         </div>
                       </div>
                     ))
+                  )}
+                </div>
+              )}
+
+              {tab === 'follows' && (
+                <div className="space-y-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-neutral-500">Topics, States &amp; Authors you follow</span>
+                    <Link
+                      to="/briefing"
+                      onClick={() => setReaderDrawerOpen(false)}
+                      className="font-semibold text-[#00652E] hover:underline"
+                    >
+                      Open My News →
+                    </Link>
+                  </div>
+                  {follows.length === 0 ? (
+                    <p className="text-neutral-500">
+                      Click Follow on any article, topic, or state in the India News Map to customize your feed.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {follows.map((fl) => (
+                        <div
+                          key={fl.id}
+                          className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-2"
+                        >
+                          <div>
+                            <span className="font-semibold">{fl.target_label}</span>
+                            <span className="ml-2 text-[11px] text-neutral-500 capitalize">({fl.follow_type})</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void removeFollow(fl)}
+                            className="text-[#DF2525] font-semibold hover:underline"
+                          >
+                            Unfollow
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
               )}

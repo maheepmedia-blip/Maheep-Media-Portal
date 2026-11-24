@@ -1,4 +1,17 @@
-import { ArrowLeft, Bookmark, Check, Copy, ExternalLink, MessageSquare, Share2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  Bookmark,
+  BookmarkCheck,
+  BookmarkPlus,
+  Check,
+  Copy,
+  ExternalLink,
+  MessageSquare,
+  Share2,
+  Sparkles,
+  Square,
+  Volume2,
+} from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
@@ -9,6 +22,8 @@ import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
 import type { Article, CommentItem } from '../types/news.ts';
 import { formatIndiaDateTime } from '../utils/date.ts';
+
+type ReaderAiMode = 'summary' | 'explain' | 'student' | 'points' | 'translate' | 'compare' | 'qa';
 
 export function ArticleDetailPage() {
   const { slug } = useParams<{ slug: string }>();
@@ -21,6 +36,20 @@ export function ArticleDetailPage() {
   const [copied, setCopied] = useState(false);
   const [bookmarked, setBookmarked] = useState(false);
 
+  // Follow topic & journalist state
+  const [followingCategory, setFollowingCategory] = useState(false);
+  const [followingAuthor, setFollowingAuthor] = useState(false);
+
+  // AI Reader Tools & Audio State
+  const [aiMode, setAiMode] = useState<ReaderAiMode | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiOutput, setAiOutput] = useState('');
+  const [aiBullets, setAiBullets] = useState<string[]>([]);
+  const [aiDisclaimer, setAiDisclaimer] = useState('');
+  const [aiQuestion, setAiQuestion] = useState('');
+  const [aiError, setAiError] = useState('');
+  const [speaking, setSpeaking] = useState(false);
+
   const [commentName, setCommentName] = useState('');
   const [commentEmail, setCommentEmail] = useState('');
   const [commentBody, setCommentBody] = useState('');
@@ -30,6 +59,14 @@ export function ArticleDetailPage() {
 
   useEffect(() => {
     setLoading(true);
+    setAiMode(null);
+    setAiOutput('');
+    setAiBullets([]);
+    setAiError('');
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      setSpeaking(false);
+    }
     fetch(`/api/articles/${encodeURIComponent(slug || '')}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('Not found'))))
       .then((json) => {
@@ -42,6 +79,14 @@ export function ArticleDetailPage() {
   }, [slug]);
 
   useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (readerUser) {
       setCommentName((prev) => prev || readerUser.name);
       setCommentEmail((prev) => prev || readerUser.email);
@@ -51,9 +96,10 @@ export function ArticleDetailPage() {
   useEffect(() => {
     if (!readerToken || !article?.id) {
       setBookmarked(false);
+      setFollowingCategory(false);
+      setFollowingAuthor(false);
       return;
     }
-    // Track history silently for signed-in reader
     void fetch('/api/reader/history', {
       method: 'POST',
       headers: {
@@ -72,7 +118,21 @@ export function ArticleDetailPage() {
         setBookmarked(list.some((b) => b.id === article.id));
       })
       .catch(() => {});
-  }, [readerToken, article?.id]);
+
+    fetch('/api/reader/follows', {
+      headers: { Authorization: `Bearer ${readerToken}` },
+    })
+      .then((r) => (r.ok ? r.json() : { follows: [] }))
+      .then((json) => {
+        const list = (json.follows || []) as Array<{ follow_type: string; target_slug: string }>;
+        setFollowingCategory(
+          Boolean(article.category_slug && list.some((f) => f.follow_type === 'category' && f.target_slug === article.category_slug)),
+        );
+        const authorSlug = (article.author || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        setFollowingAuthor(list.some((f) => f.follow_type === 'author' && f.target_slug === authorSlug));
+      })
+      .catch(() => {});
+  }, [readerToken, article?.id, article?.category_slug, article?.author]);
 
   const toggleBookmark = async () => {
     if (!readerToken || !article) {
@@ -96,6 +156,89 @@ export function ArticleDetailPage() {
       });
       if (res.ok) setBookmarked(true);
     }
+  };
+
+  const toggleFollow = async (type: 'category' | 'author') => {
+    if (!article) return;
+    if (!readerToken) {
+      setReaderDrawerOpen(true);
+      return;
+    }
+    const targetSlug =
+      type === 'category'
+        ? article.category_slug || 'national'
+        : (article.author || 'editorial').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const targetLabel = type === 'category' ? article.category_name || 'News' : article.author || 'Editorial Desk';
+    const currentlyFollowed = type === 'category' ? followingCategory : followingAuthor;
+
+    if (currentlyFollowed) {
+      const res = await fetch(`/api/reader/follows/${type}/${encodeURIComponent(targetSlug)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${readerToken}` },
+      });
+      if (res.ok) {
+        if (type === 'category') setFollowingCategory(false);
+        else setFollowingAuthor(false);
+      }
+    } else {
+      const res = await fetch('/api/reader/follows', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${readerToken}`,
+        },
+        body: JSON.stringify({ follow_type: type, target_slug: targetSlug, target_label: targetLabel }),
+      });
+      if (res.ok) {
+        if (type === 'category') setFollowingCategory(true);
+        else setFollowingAuthor(true);
+      }
+    }
+  };
+
+  const runReaderAi = async (mode: ReaderAiMode, customQuestion?: string) => {
+    if (!article) return;
+    setAiMode(mode);
+    setAiBusy(true);
+    setAiError('');
+    try {
+      const res = await fetch('/api/ai/article-tool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          articleId: article.id,
+          mode,
+          question: customQuestion || aiQuestion,
+          targetLanguage: article.language === 'hi' ? 'en' : 'hi',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Could not analyze article.');
+      setAiOutput(json.output || '');
+      setAiBullets(Array.isArray(json.bullets) ? json.bullets : []);
+      setAiDisclaimer(json.disclaimer || '');
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'AI assistant unavailable');
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const toggleListenArticle = () => {
+    if (!article || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (speaking) {
+      window.speechSynthesis.cancel();
+      setSpeaking(false);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const text = `${article.title}. ${article.summary}. ${(article.content || '').slice(0, 2400)}`;
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = article.language === 'hi' ? 'hi-IN' : 'en-IN';
+    utter.onend = () => setSpeaking(false);
+    utter.onerror = () => setSpeaking(false);
+    window.speechSynthesis.speak(utter);
+    setSpeaking(true);
   };
 
   const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
@@ -188,9 +331,22 @@ export function ArticleDetailPage() {
             )}
           </nav>
 
-          {/* Accessibility Text Size & Bookmark */}
+          {/* Accessibility Text Size, Audio & Bookmark */}
           {article && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleListenArticle}
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded border text-xs font-semibold transition-colors ${
+                  speaking
+                    ? 'bg-[#DF2525] text-white border-[#DF2525]'
+                    : 'border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]'
+                }`}
+              >
+                {speaking ? <Square className="w-3 h-3" /> : <Volume2 className="w-3.5 h-3.5 text-[#00652E]" />}
+                {speaking ? 'Stop Audio' : 'Listen'}
+              </button>
+
               <div className="inline-flex items-center rounded border border-neutral-300 dark:border-neutral-700 overflow-hidden text-xs">
                 {(['sm', 'md', 'lg'] as const).map((sz) => (
                   <button
@@ -267,13 +423,38 @@ export function ArticleDetailPage() {
               </p>
 
               <div className="flex flex-wrap items-center justify-between gap-4 pt-2 text-xs text-neutral-600 dark:text-neutral-400">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                   <Link
                     to="/authors"
                     className="font-semibold text-neutral-900 dark:text-neutral-200 hover:text-[#00652E] hover:underline"
                   >
                     By {article.author}
                   </Link>
+                  <button
+                    type="button"
+                    onClick={() => void toggleFollow('author')}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-medium ${
+                      followingAuthor
+                        ? 'bg-[#00652E] text-white border-[#00652E]'
+                        : 'border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]'
+                    }`}
+                  >
+                    {followingAuthor ? <BookmarkCheck className="w-3 h-3" /> : <BookmarkPlus className="w-3 h-3" />}
+                    {followingAuthor ? 'Following Author' : 'Follow Author'}
+                  </button>
+                  {article.category_name && (
+                    <button
+                      type="button"
+                      onClick={() => void toggleFollow('category')}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-medium ${
+                        followingCategory
+                          ? 'bg-[#00652E] text-white border-[#00652E]'
+                          : 'border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]'
+                      }`}
+                    >
+                      {followingCategory ? 'Following Topic' : `Follow ${article.category_name}`}
+                    </button>
+                  )}
                   <span aria-hidden="true">·</span>
                   <span>{article.source_name}</span>
                   <span aria-hidden="true">·</span>
@@ -335,10 +516,87 @@ export function ArticleDetailPage() {
                   <ArticleImage src={article.image_url} alt={article.title} category={article.category_name} />
                 </div>
                 <figcaption className="px-4 py-2 text-xs text-neutral-500 dark:text-neutral-400">
-                  Photo credit: {article.source_name}
+                  Photo credit: {article.source_name} · Rights: {article.image_rights || 'Editorial Attribution'}
                 </figcaption>
               </figure>
             )}
+
+            {/* AI Reader Assistant Panel */}
+            <section className="max-w-3xl p-4 sm:p-5 rounded-xl bg-[#EAF5E5]/55 dark:bg-neutral-900 border border-[#00652E]/20 space-y-3">
+              <div className="flex items-center justify-between gap-2 text-xs font-bold text-[#00451F] dark:text-[#4ade80]">
+                <span className="inline-flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4" />
+                  MAHEEP AI Reader Tools
+                </span>
+                <Link to="/briefing" className="underline font-semibold">
+                  Open Ask MAHEEP AI Desk →
+                </Link>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {([
+                  ['summary', '30s Summary'],
+                  ['explain', 'Explain Simply'],
+                  ['student', 'Student Mode'],
+                  ['points', 'Key Points'],
+                  ['translate', article.language === 'hi' ? 'Translate → English' : 'हिन्दी अनुवाद'],
+                  ['compare', 'Compare Sources'],
+                ] as const).map(([m, label]) => (
+                  <button
+                    key={m}
+                    type="button"
+                    disabled={aiBusy}
+                    onClick={() => void runReaderAi(m)}
+                    className={`px-3 py-1.5 rounded text-xs font-semibold border transition-colors ${
+                      aiMode === m
+                        ? 'bg-[#00652E] text-white border-[#00652E]'
+                        : 'bg-white dark:bg-neutral-950 border-[#00652E]/25 text-[#00451F] dark:text-[#4ade80] hover:border-[#00652E]'
+                    }`}
+                  >
+                    {aiBusy && aiMode === m ? 'Generating...' : label}
+                  </button>
+                ))}
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (aiQuestion.trim().length >= 2) void runReaderAi('qa', aiQuestion.trim());
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={aiQuestion}
+                  onChange={(e) => setAiQuestion(e.target.value)}
+                  placeholder="Ask a question about this report..."
+                  className="flex-1 px-3 py-1.5 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                />
+                <button
+                  type="submit"
+                  disabled={aiBusy || aiQuestion.trim().length < 2}
+                  className="px-3.5 py-1.5 rounded bg-[#00652E] text-white text-xs font-semibold disabled:opacity-50"
+                >
+                  Ask
+                </button>
+              </form>
+
+              {aiError && <p className="text-xs text-[#DF2525]">{aiError}</p>}
+
+              {(aiOutput || aiBullets.length > 0) && (
+                <div className="p-4 rounded-lg bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 space-y-2 text-sm text-neutral-800 dark:text-neutral-200">
+                  {aiOutput && <p className="leading-relaxed whitespace-pre-line">{aiOutput}</p>}
+                  {aiBullets.length > 0 && (
+                    <ul className="list-disc pl-5 space-y-1 text-xs sm:text-sm">
+                      {aiBullets.map((b, i) => (
+                        <li key={i}>{b}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {aiDisclaimer && <p className="text-[11px] text-neutral-500 pt-1">{aiDisclaimer}</p>}
+                </div>
+              )}
+            </section>
 
             <div className={`max-w-3xl space-y-5 text-neutral-800 dark:text-neutral-200 ${bodyTextClass}`}>
               {(article.content || article.summary).split(/\n+/).map((para, idx) => (
@@ -355,21 +613,28 @@ export function ArticleDetailPage() {
               ))}
             </div>
 
-            {article.source_url && (
-              <div className="max-w-3xl p-4 rounded-lg bg-[#EAF5E5]/60 dark:bg-neutral-900 border border-[#00652E]/20 flex flex-wrap items-center justify-between gap-3">
-                <span className="text-xs text-neutral-700 dark:text-neutral-300">
-                  Original publisher attribution: <strong>{article.source_name}</strong>
-                </span>
-                <a
-                  href={article.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
-                >
-                  Visit Original Source <ExternalLink className="w-3.5 h-3.5" />
-                </a>
+            {/* Source Transparency & Editorial Provenance Panel */}
+            <div className="max-w-3xl p-4 rounded-lg bg-[#EAF5E5]/60 dark:bg-neutral-900 border border-[#00652E]/20 space-y-2 text-xs">
+              <div className="font-bold text-neutral-900 dark:text-white">Source Transparency &amp; Publication Record</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-neutral-700 dark:text-neutral-300 font-mono-tabular">
+                <div>Origin Desk / Agency: {article.source_name}</div>
+                <div>Image Attribution: {article.image_rights || 'Editorial Attribution'}</div>
+                <div>Published (IST): {formatIndiaDateTime(article.published_at)}</div>
+                <div>Last Updated (IST): {formatIndiaDateTime(article.updated_at)}</div>
               </div>
-            )}
+              {article.source_url && (
+                <div className="pt-1">
+                  <a
+                    href={article.source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
+                  >
+                    Visit Original Publisher Report <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              )}
+            </div>
 
             <AdSlot placement="article_inline" className="max-w-3xl" />
 

@@ -31,7 +31,15 @@ import {
   sendNewsletterConfirmationEmail,
 } from './email.ts';
 import { generateEditionForDate, renderEditionPrintableHtml } from './epaper.ts';
-import { type AiAssistAction, isGeminiConfigured, runEditorialAiAssist } from './gemini.ts';
+import {
+  type AiAssistAction,
+  type ReaderAiMode,
+  askMaheepAi,
+  generateDailyBriefingScript,
+  isGeminiConfigured,
+  runEditorialAiAssist,
+  runPublicReaderAiTool,
+} from './gemini.ts';
 import { ALL_JOB_NAMES, type JobName, listRecentCronRuns, runManagedJob } from './jobs.ts';
 import { broadcastBreakingPush, ensureVapidConfigured, removePushSubscription, savePushSubscription } from './push.ts';
 import {
@@ -516,6 +524,65 @@ export function registerApiRoutes(app: Express): void {
     res.json({ editions: rows });
   });
 
+  app.get('/api/editions/search', (req, res) => {
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const date = String(req.query.date || '').trim();
+    const rows = db
+      .prepare(
+        date
+          ? "SELECT id, edition_date, title, page_count, article_count, content_json FROM editions WHERE status = 'published' AND edition_date = ? ORDER BY edition_date DESC"
+          : "SELECT id, edition_date, title, page_count, article_count, content_json FROM editions WHERE status = 'published' ORDER BY edition_date DESC LIMIT 60",
+      )
+      .all(...(date ? [date] : [])) as Array<{
+      id: string;
+      edition_date: string;
+      title: string;
+      page_count: number;
+      article_count: number;
+      content_json: string;
+    }>;
+
+    const matches: Array<{
+      edition_id: string;
+      edition_date: string;
+      pageNumber: number;
+      sectionTitle: string;
+      title: string;
+      slug?: string;
+      category_name?: string;
+      state_name?: string;
+    }> = [];
+
+    for (const ed of rows) {
+      try {
+        const parsed = JSON.parse(ed.content_json || '{}');
+        const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
+        for (const p of pages) {
+          const arts = Array.isArray(p.articles) ? p.articles : [];
+          for (const a of arts) {
+            const hay = `${a.title || ''} ${a.summary || ''} ${a.category_name || ''} ${a.state_name || ''} ${p.sectionTitle || ''}`.toLowerCase();
+            if (!q || hay.includes(q)) {
+              matches.push({
+                edition_id: ed.id,
+                edition_date: ed.edition_date,
+                pageNumber: Number(p.pageNumber || 1),
+                sectionTitle: String(p.sectionTitle || ''),
+                title: String(a.title || ''),
+                slug: a.slug ? String(a.slug) : undefined,
+                category_name: a.category_name ? String(a.category_name) : undefined,
+                state_name: a.state_name ? String(a.state_name) : undefined,
+              });
+            }
+          }
+        }
+      } catch {
+        // Ignore malformed edition payload
+      }
+    }
+
+    res.json({ matches: matches.slice(0, 60) });
+  });
+
   app.get('/api/editions/:id/html', (req, res) => {
     const idOrDate = String(req.params.id || '').trim();
     const edition = db
@@ -591,6 +658,265 @@ export function registerApiRoutes(app: Express): void {
     `).run(`ana-${crypto.randomUUID().slice(0, 10)}`, eventType, pagePath, articleId, categorySlug, language);
 
     res.json({ ok: true });
+  });
+
+  // ---------------- READER AI TOOLS, ASK MAHEEP AI, BRIEFING, POLLS, TIMELINES & ELECTIONS ----------------
+
+  app.post('/api/ai/article-tool', async (req, res) => {
+    const ip = req.ip || 'unknown';
+    if (!checkRateLimit(`ai-tool:${ip}`, 20, 10 * 60_000)) {
+      res.status(429).json({ error: 'Too many AI reader requests. Please pause briefly.' });
+      return;
+    }
+    const slug = String(req.body?.slug || '').trim();
+    const articleId = String(req.body?.articleId || '').trim();
+    const mode = String(req.body?.mode || 'summary') as ReaderAiMode;
+    const allowedModes: ReaderAiMode[] = ['summary', 'explain', 'student', 'points', 'translate', 'compare', 'qa'];
+    if ((!slug && !articleId) || !allowedModes.includes(mode)) {
+      res.status(400).json({ error: 'Valid article ID or slug and AI tool mode required.' });
+      return;
+    }
+
+    const article = (
+      articleId
+        ? db.prepare("SELECT * FROM articles WHERE id = ? AND status = 'published'").get(articleId)
+        : db.prepare("SELECT * FROM articles WHERE slug = ? AND status = 'published'").get(slug)
+    ) as
+      | {
+          id: string;
+          title: string;
+          summary: string;
+          content: string;
+          source_name: string;
+          source_url: string;
+          language: 'en' | 'hi';
+          category_id: string;
+          published_at: string;
+        }
+      | undefined;
+
+    if (!article) {
+      res.status(404).json({ error: 'Published article not found.' });
+      return;
+    }
+
+    const relatedSources = db
+      .prepare(`
+        SELECT title, slug, source_name, summary, published_at
+        FROM articles
+        WHERE status = 'published' AND id != ? AND category_id = ?
+        ORDER BY published_at DESC
+        LIMIT 4
+      `)
+      .all(article.id, article.category_id) as Array<{
+      title: string;
+      slug: string;
+      source_name: string;
+      summary: string;
+      published_at: string;
+    }>;
+
+    const result = await runPublicReaderAiTool({
+      mode,
+      article,
+      question: String(req.body?.question || '').trim(),
+      targetLanguage: req.body?.targetLanguage === 'hi' || req.body?.targetLanguage === 'en' ? req.body.targetLanguage : undefined,
+      relatedSources,
+    });
+    res.json({
+      ...result,
+      output: result.answer,
+      disclaimer: 'AI Reader Aid grounded strictly in the published article text and linked Maheep Media reports.',
+    });
+  });
+
+  app.post('/api/ai/ask', async (req, res) => {
+    const ip = req.ip || 'unknown';
+    if (!checkRateLimit(`ai-ask:${ip}`, 15, 10 * 60_000)) {
+      res.status(429).json({ error: 'Too many Ask MAHEEP AI questions. Please wait a few minutes.' });
+      return;
+    }
+    const query = String(req.body?.query || '').trim();
+    const lang = req.body?.language === 'hi' || req.body?.language === 'en' ? req.body.language : 'all';
+    if (query.length < 2) {
+      res.status(400).json({ error: 'Please ask a question or enter keywords (e.g. "What happened in Lucknow today?").' });
+      return;
+    }
+
+    const stopWords = new Set(['what', 'happened', 'today', 'latest', 'news', 'about', 'from', 'with', 'this', 'that', 'india', 'kya', 'hua', 'aaj']);
+    const tokens = query
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 3 && !stopWords.has(w))
+      .slice(0, 5);
+
+    const langCond = lang === 'en' || lang === 'hi' ? 'AND a.language = ?' : '';
+    const baseParams: unknown[] = lang === 'en' || lang === 'hi' ? [lang] : [];
+
+    let candidates: Array<{
+      id: string;
+      title: string;
+      slug: string;
+      summary: string;
+      source_name: string;
+      published_at: string;
+      category_name?: string;
+      state_name?: string;
+    }> = [];
+
+    if (tokens.length > 0) {
+      const orClauses = tokens
+        .map(() => '(a.title LIKE ? OR a.summary LIKE ? OR a.content LIKE ? OR COALESCE(s.name, \'\') LIKE ? OR COALESCE(c.name, \'\') LIKE ?)')
+        .join(' OR ');
+      const tokenParams = tokens.flatMap((t) => {
+        const pat = `%${t}%`;
+        return [pat, pat, pat, pat, pat];
+      });
+      candidates = db
+        .prepare(`
+          SELECT a.id, a.title, a.slug, a.summary, a.source_name, a.published_at, c.name as category_name, s.name as state_name
+          FROM articles a
+          LEFT JOIN categories c ON c.id = a.category_id
+          LEFT JOIN states s ON s.id = a.state_id
+          WHERE a.status = 'published' ${langCond} AND (${orClauses})
+          ORDER BY a.published_at DESC
+          LIMIT 8
+        `)
+        .all(...baseParams, ...tokenParams) as typeof candidates;
+    }
+
+    if (candidates.length === 0) {
+      candidates = db
+        .prepare(`
+          SELECT a.id, a.title, a.slug, a.summary, a.source_name, a.published_at, c.name as category_name, s.name as state_name
+          FROM articles a
+          LEFT JOIN categories c ON c.id = a.category_id
+          LEFT JOIN states s ON s.id = a.state_id
+          WHERE a.status = 'published' ${langCond}
+          ORDER BY a.published_at DESC
+          LIMIT 6
+        `)
+        .all(...baseParams) as typeof candidates;
+    }
+
+    const result = await askMaheepAi({ query, language: lang, candidates });
+    res.json({
+      ...result,
+      citations: result.sources,
+      disclaimer: 'Answers are grounded exclusively in published Maheep News Portal reports cited alongside this response.',
+    });
+  });
+
+  app.get('/api/briefing', async (req, res) => {
+    const lang = req.query.language === 'hi' ? 'hi' : 'en';
+    const picks = db
+      .prepare(`
+        ${ARTICLE_SELECT}
+        WHERE a.status = 'published' AND a.language = ?
+        ORDER BY a.breaking DESC, a.featured DESC, a.published_at DESC
+        LIMIT 8
+      `)
+      .all(lang) as Array<{
+      id: string;
+      title: string;
+      slug: string;
+      summary: string;
+      source_name: string;
+      category_name?: string;
+      published_at: string;
+      image_url?: string;
+    }>;
+
+    const fallbackPicks =
+      picks.length > 0
+        ? picks
+        : (db
+            .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' ORDER BY a.published_at DESC LIMIT 6`)
+            .all() as typeof picks);
+
+    const scriptData = await generateDailyBriefingScript({ articles: fallbackPicks, language: lang });
+    const fullScript = [scriptData.intro, ...scriptData.bulletScript, scriptData.closing].filter(Boolean).join('\n\n');
+    res.json({
+      language: lang,
+      dateIst: getTodayIndiaDate(),
+      headlineCount: fallbackPicks.length,
+      stories: fallbackPicks,
+      articles: fallbackPicks,
+      script: fullScript,
+      bulletScript: scriptData.bulletScript,
+      groundedWithGemini: scriptData.groundedWithGemini,
+    });
+  });
+
+  app.get('/api/polls', (_req, res) => {
+    const polls = db.prepare('SELECT * FROM polls WHERE active = 1 ORDER BY created_at DESC LIMIT 10').all() as Array<{
+      id: string;
+      question: string;
+      category: string;
+      created_at: string;
+    }>;
+    const getOptions = db.prepare('SELECT id, label, votes FROM poll_options WHERE poll_id = ? ORDER BY rowid ASC');
+    res.json({
+      polls: polls.map((p) => {
+        const options = getOptions.all(p.id) as Array<{ id: string; label: string; votes: number }>;
+        const totalVotes = options.reduce((acc, o) => acc + Number(o.votes || 0), 0);
+        return { ...p, options, totalVotes };
+      }),
+    });
+  });
+
+  app.post('/api/polls/:id/vote', (req, res) => {
+    const ip = req.ip || 'unknown';
+    if (!checkRateLimit(`poll-vote:${ip}`, 10, 10 * 60_000)) {
+      res.status(429).json({ error: 'Too many poll submissions. Please wait a moment.' });
+      return;
+    }
+    const pollId = String(req.params.id || '').trim();
+    const optionId = String(req.body?.option_id || '').trim();
+    const voterKey = crypto.createHash('sha256').update(`${ip}:${req.headers['user-agent'] || ''}`).digest('hex').slice(0, 24);
+
+    const opt = db.prepare('SELECT * FROM poll_options WHERE id = ? AND poll_id = ?').get(optionId, pollId);
+    if (!opt) {
+      res.status(404).json({ error: 'Poll option not found.' });
+      return;
+    }
+
+    try {
+      db.prepare('INSERT INTO poll_votes (id, poll_id, voter_key, option_id) VALUES (?, ?, ?, ?)').run(
+        `pv-${crypto.randomUUID().slice(0, 10)}`,
+        pollId,
+        voterKey,
+        optionId,
+      );
+      db.prepare('UPDATE poll_options SET votes = votes + 1 WHERE id = ?').run(optionId);
+    } catch {
+      res.status(409).json({ error: 'You have already voted in this poll.' });
+      return;
+    }
+
+    const options = db.prepare('SELECT id, label, votes FROM poll_options WHERE poll_id = ? ORDER BY rowid ASC').all(pollId) as Array<{
+      id: string;
+      label: string;
+      votes: number;
+    }>;
+    const totalVotes = options.reduce((acc, o) => acc + Number(o.votes || 0), 0);
+    res.json({ ok: true, options, totalVotes });
+  });
+
+  app.get('/api/timelines', (_req, res) => {
+    const timelines = db.prepare('SELECT * FROM news_timelines WHERE active = 1 ORDER BY updated_at DESC').all() as Array<
+      Record<string, unknown>
+    >;
+    const getEvents = db.prepare('SELECT * FROM timeline_events WHERE timeline_id = ? ORDER BY event_date DESC, created_at DESC');
+    res.json({
+      timelines: timelines.map((tl) => ({ ...tl, events: getEvents.all(String(tl.id)) })),
+    });
+  });
+
+  app.get('/api/elections', (_req, res) => {
+    const updates = db.prepare('SELECT * FROM election_updates ORDER BY updated_at DESC').all();
+    res.json({ updates });
   });
 
   // ---------------- CONTACT & DOUBLE OPT-IN NEWSLETTER ----------------
@@ -774,7 +1100,9 @@ export function registerApiRoutes(app: Express): void {
 
   app.get('/api/reader/me', requireReader, (req: ReaderAuthenticatedRequest, res) => {
     const user = db
-      .prepare('SELECT id, name, email, preferred_language, font_size, created_at FROM reader_users WHERE id = ?')
+      .prepare(
+        'SELECT id, name, email, preferred_language, font_size, streak_days, last_read_date, last_epaper_edition, last_epaper_page, created_at FROM reader_users WHERE id = ?',
+      )
       .get(req.readerUser?.sub || '');
     if (!user) {
       res.status(404).json({ error: 'Reader account not found.' });
@@ -882,7 +1210,173 @@ export function registerApiRoutes(app: Express): void {
       VALUES (?, ?, ?, datetime('now'))
       ON CONFLICT(reader_id, article_id) DO UPDATE SET read_at = datetime('now')
     `).run(`his-${crypto.randomUUID().slice(0, 10)}`, req.readerUser?.sub || '', articleId);
+
+    // Maintain daily IST reading streak
+    const readerId = req.readerUser?.sub || '';
+    const todayIst = getTodayIndiaDate();
+    const yesterdayIst = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(
+      new Date(Date.now() - 86_400_000),
+    );
+    const reader = db.prepare('SELECT streak_days, last_read_date FROM reader_users WHERE id = ?').get(readerId) as
+      | { streak_days: number; last_read_date: string }
+      | undefined;
+    if (reader && reader.last_read_date !== todayIst) {
+      const nextStreak = reader.last_read_date === yesterdayIst ? (reader.streak_days || 0) + 1 : 1;
+      db.prepare('UPDATE reader_users SET streak_days = ?, last_read_date = ? WHERE id = ?').run(nextStreak, todayIst, readerId);
+    }
+
     res.json({ ok: true });
+  });
+
+  app.get('/api/reader/follows', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    const follows = db
+      .prepare('SELECT * FROM reader_follows WHERE reader_id = ? ORDER BY created_at DESC')
+      .all(req.readerUser?.sub || '');
+    res.json({ follows });
+  });
+
+  app.post('/api/reader/follows', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    const followType = ['category', 'state', 'author'].includes(req.body?.follow_type) ? req.body.follow_type : '';
+    const targetSlug = String(req.body?.target_slug || '').trim();
+    const targetLabel = String(req.body?.target_label || targetSlug).trim();
+    if (!followType || !targetSlug) {
+      res.status(400).json({ error: 'follow_type and target_slug are required.' });
+      return;
+    }
+    db.prepare(`
+      INSERT OR IGNORE INTO reader_follows (id, reader_id, follow_type, target_slug, target_label)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(`flw-${crypto.randomUUID().slice(0, 10)}`, req.readerUser?.sub || '', followType, targetSlug, targetLabel);
+    res.status(201).json({ ok: true });
+  });
+
+  app.delete('/api/reader/follows/:type/:slug', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    db.prepare('DELETE FROM reader_follows WHERE reader_id = ? AND follow_type = ? AND target_slug = ?').run(
+      req.readerUser?.sub || '',
+      String(req.params.type || ''),
+      String(req.params.slug || ''),
+    );
+    res.json({ ok: true });
+  });
+
+  app.get('/api/reader/my-feed', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    const readerId = req.readerUser?.sub || '';
+    const reader = db.prepare('SELECT preferred_language FROM reader_users WHERE id = ?').get(readerId) as
+      | { preferred_language: string }
+      | undefined;
+    const follows = db.prepare('SELECT follow_type, target_slug, target_label FROM reader_follows WHERE reader_id = ?').all(readerId) as Array<{
+      follow_type: string;
+      target_slug: string;
+      target_label: string;
+    }>;
+
+    const cats = follows.filter((f) => f.follow_type === 'category').map((f) => f.target_slug);
+    const sts = follows.filter((f) => f.follow_type === 'state').map((f) => f.target_slug);
+    const auths = follows.filter((f) => f.follow_type === 'author').map((f) => f.target_label);
+
+    const langCond = reader?.preferred_language === 'en' || reader?.preferred_language === 'hi' ? 'AND a.language = ?' : '';
+    const params: unknown[] = reader?.preferred_language === 'en' || reader?.preferred_language === 'hi' ? [reader.preferred_language] : [];
+
+    const orParts: string[] = [];
+    if (cats.length > 0) {
+      orParts.push(`c.slug IN (${cats.map(() => '?').join(',')})`);
+      params.push(...cats);
+    }
+    if (sts.length > 0) {
+      orParts.push(`s.slug IN (${sts.map(() => '?').join(',')})`);
+      params.push(...sts);
+    }
+    if (auths.length > 0) {
+      orParts.push(`a.author IN (${auths.map(() => '?').join(',')})`);
+      params.push(...auths);
+    }
+
+    const matchClause = orParts.length > 0 ? `AND (${orParts.join(' OR ')})` : '';
+    const articles = db
+      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' ${langCond} ${matchClause} ORDER BY a.published_at DESC LIMIT 30`)
+      .all(...params);
+    res.json({ articles, followsCount: follows.length });
+  });
+
+  app.post('/api/reader/epaper-progress', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    const editionDate = String(req.body?.edition_date || '').trim();
+    const pageNumber = Math.max(1, Number(req.body?.page_number || 1));
+    if (editionDate) {
+      db.prepare('UPDATE reader_users SET last_epaper_edition = ?, last_epaper_page = ? WHERE id = ?').run(
+        editionDate,
+        pageNumber,
+        req.readerUser?.sub || '',
+      );
+    }
+    res.json({ ok: true });
+  });
+
+  app.get('/api/reader/epaper-bookmarks', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    const rows = db
+      .prepare('SELECT * FROM reader_epaper_bookmarks WHERE reader_id = ? ORDER BY created_at DESC LIMIT 50')
+      .all(req.readerUser?.sub || '');
+    res.json({ bookmarks: rows });
+  });
+
+  app.post('/api/reader/epaper-bookmarks', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    const editionDate = String(req.body?.edition_date || '').trim();
+    const pageNumber = Math.max(1, Number(req.body?.page_number || 1));
+    const sectionTitle = String(req.body?.section_title || '').trim();
+    if (!editionDate) {
+      res.status(400).json({ error: 'edition_date required.' });
+      return;
+    }
+    db.prepare(`
+      INSERT OR IGNORE INTO reader_epaper_bookmarks (id, reader_id, edition_date, page_number, section_title)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(`epb-${crypto.randomUUID().slice(0, 10)}`, req.readerUser?.sub || '', editionDate, pageNumber, sectionTitle);
+    res.status(201).json({ ok: true });
+  });
+
+  app.delete('/api/reader/epaper-bookmarks/:id', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    db.prepare('DELETE FROM reader_epaper_bookmarks WHERE id = ? AND reader_id = ?').run(
+      String(req.params.id || ''),
+      req.readerUser?.sub || '',
+    );
+    res.json({ ok: true });
+  });
+
+  app.get('/api/reader/weekly-report', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    const readerId = req.readerUser?.sub || '';
+    const user = db
+      .prepare('SELECT streak_days, last_read_date, last_epaper_edition, last_epaper_page FROM reader_users WHERE id = ?')
+      .get(readerId) as
+      | { streak_days: number; last_read_date: string; last_epaper_edition: string; last_epaper_page: number }
+      | undefined;
+    const readWeek = (
+      db
+        .prepare("SELECT COUNT(*) as c FROM reader_history WHERE reader_id = ? AND datetime(read_at) >= datetime('now', '-7 days')")
+        .get(readerId) as { c: number }
+    ).c;
+    const totalBookmarks = (
+      db.prepare('SELECT COUNT(*) as c FROM reader_bookmarks WHERE reader_id = ?').get(readerId) as { c: number }
+    ).c;
+    const topCategories = db
+      .prepare(`
+        SELECT COALESCE(c.name, 'General') as category, COUNT(*) as count
+        FROM reader_history h
+        INNER JOIN articles a ON a.id = h.article_id
+        LEFT JOIN categories c ON c.id = a.category_id
+        WHERE h.reader_id = ?
+        GROUP BY c.id
+        ORDER BY count DESC
+        LIMIT 4
+      `)
+      .all(readerId);
+
+    res.json({
+      streakDays: user?.streak_days || 0,
+      lastEpaperEdition: user?.last_epaper_edition || '',
+      lastEpaperPage: user?.last_epaper_page || 1,
+      articlesReadLast7Days: readWeek,
+      totalBookmarks,
+      topCategories,
+    });
   });
 
   app.get('/api/push/vapid-key', (_req, res) => {
@@ -1226,10 +1720,10 @@ export function registerApiRoutes(app: Express): void {
 
     db.prepare(`
       INSERT INTO articles (
-        id, title, slug, summary, content, image_url, source_name, source_url,
+        id, title, slug, summary, content, image_url, image_rights, source_name, source_url,
         author, language, category_id, state_id, subtopic, status, featured, breaking,
         ai_assisted, published_at, scheduled_at, unpublish_at, reviewed_by, reviewed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       title,
@@ -1237,6 +1731,7 @@ export function registerApiRoutes(app: Express): void {
       summary,
       content || summary,
       sanitizeSafeUrl(req.body?.image_url),
+      String(req.body?.image_rights || 'Editorial Attribution').trim(),
       String(req.body?.source_name || 'Maheep News Desk').trim(),
       sanitizeSafeUrl(req.body?.source_url),
       String(req.body?.author || 'Maheep Editorial Desk').trim(),
@@ -1304,6 +1799,7 @@ export function registerApiRoutes(app: Express): void {
         summary = ?,
         content = ?,
         image_url = ?,
+        image_rights = ?,
         source_name = ?,
         source_url = ?,
         author = ?,
@@ -1326,6 +1822,7 @@ export function registerApiRoutes(app: Express): void {
       req.body?.summary !== undefined ? String(req.body.summary).trim() : existing.summary,
       req.body?.content !== undefined ? String(req.body.content).trim() : existing.content,
       req.body?.image_url !== undefined ? sanitizeSafeUrl(req.body.image_url) : existing.image_url,
+      req.body?.image_rights !== undefined ? String(req.body.image_rights).trim() : existing.image_rights || 'Editorial Attribution',
       req.body?.source_name !== undefined ? String(req.body.source_name).trim() : existing.source_name,
       req.body?.source_url !== undefined ? sanitizeSafeUrl(req.body.source_url) : existing.source_url,
       req.body?.author !== undefined ? String(req.body.author).trim() : existing.author,
@@ -1347,6 +1844,41 @@ export function registerApiRoutes(app: Express): void {
     recordAdminAudit({ req, action: 'article_update', targetType: 'article', targetId: id, details: { status: nextStatus } });
     const updated = db.prepare(`${ARTICLE_SELECT} WHERE a.id = ?`).get(id);
     res.json({ article: updated });
+  });
+
+  app.post('/api/admin/articles/:id/emergency-unpublish', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '');
+    const existing = db.prepare('SELECT * FROM articles WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Article not found.' });
+      return;
+    }
+    db.prepare(`
+      INSERT INTO article_revisions (id, article_id, editor_email, title, summary, content, status, change_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `rev-${crypto.randomUUID().slice(0, 10)}`,
+      id,
+      req.adminUser?.email || 'editorial',
+      String(existing.title || ''),
+      String(existing.summary || ''),
+      String(existing.content || ''),
+      String(existing.status || 'published'),
+      String(req.body?.reason || 'Emergency unpublish'),
+    );
+    db.prepare(`
+      UPDATE articles
+      SET status = 'archived', breaking = 0, featured = 0, reviewed_by = ?, reviewed_at = datetime('now'), updated_at = datetime('now')
+      WHERE id = ?
+    `).run(req.adminUser?.email || '', id);
+    recordAdminAudit({
+      req,
+      action: 'emergency_unpublish',
+      targetType: 'article',
+      targetId: id,
+      details: { reason: String(req.body?.reason || 'Immediate editorial takedown') },
+    });
+    res.json({ ok: true, id });
   });
 
   app.delete('/api/admin/articles/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
@@ -1739,6 +2271,51 @@ export function registerApiRoutes(app: Express): void {
     const id = String(req.params.id || '');
     db.prepare('DELETE FROM comments WHERE id = ?').run(id);
     recordAdminAudit({ req, action: 'comment_delete', targetType: 'comment', targetId: id });
+    res.json({ ok: true });
+  });
+
+  app.get('/api/admin/polls', requireAdmin, (_req, res) => {
+    const polls = db.prepare('SELECT * FROM polls ORDER BY created_at DESC LIMIT 30').all() as Array<Record<string, unknown>>;
+    const getOptions = db.prepare('SELECT id, label, votes FROM poll_options WHERE poll_id = ? ORDER BY rowid ASC');
+    res.json({
+      polls: polls.map((p) => {
+        const options = getOptions.all(String(p.id)) as Array<{ id: string; label: string; votes: number }>;
+        return { ...p, options };
+      }),
+    });
+  });
+
+  app.post('/api/admin/polls', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const question = String(req.body?.question || '').trim();
+    const category = String(req.body?.category || 'Public Opinion').trim();
+    const options = Array.isArray(req.body?.options)
+      ? req.body.options.map((o: unknown) => String(o || '').trim()).filter(Boolean)
+      : [];
+    if (question.length < 5 || options.length < 2) {
+      res.status(400).json({ error: 'Poll question and at least 2 options are required.' });
+      return;
+    }
+    const pollId = `poll-${crypto.randomUUID().slice(0, 8)}`;
+    db.prepare('INSERT INTO polls (id, question, category, language, active) VALUES (?, ?, ?, ?, 1)').run(
+      pollId,
+      question,
+      category,
+      req.body?.language === 'hi' ? 'hi' : 'all',
+    );
+    const insOpt = db.prepare('INSERT INTO poll_options (id, poll_id, label, votes) VALUES (?, ?, ?, 0)');
+    options.slice(0, 6).forEach((label: string, idx: number) => {
+      insOpt.run(`${pollId}-opt-${idx + 1}`, pollId, label);
+    });
+    recordAdminAudit({ req, action: 'poll_create', targetType: 'poll', targetId: pollId, details: { question } });
+    res.status(201).json({ ok: true, id: pollId });
+  });
+
+  app.delete('/api/admin/polls/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '');
+    db.prepare('DELETE FROM poll_votes WHERE poll_id = ?').run(id);
+    db.prepare('DELETE FROM poll_options WHERE poll_id = ?').run(id);
+    db.prepare('DELETE FROM polls WHERE id = ?').run(id);
+    recordAdminAudit({ req, action: 'poll_delete', targetType: 'poll', targetId: id });
     res.json({ ok: true });
   });
 

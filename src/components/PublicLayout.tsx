@@ -83,7 +83,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
             MAHEEP NEWS PORTAL
           </Link>
 
-          <nav className="hidden lg:flex items-center gap-6" aria-label="Primary navigation">
+          <nav className="hidden lg:flex items-center gap-5" aria-label="Primary navigation">
             <NavLink to="/" end className={navLinkClass}>
               Home
             </NavLink>
@@ -94,10 +94,13 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
               States &amp; UTs
             </NavLink>
             <NavLink to="/business-sports" className={navLinkClass}>
-              Business &amp; Sports
+              Business
             </NavLink>
-            <NavLink to="/contact" className={navLinkClass}>
-              Contact
+            <NavLink to="/briefing" className={navLinkClass}>
+              AI &amp; Audio
+            </NavLink>
+            <NavLink to="/timelines" className={navLinkClass}>
+              Timelines
             </NavLink>
           </nav>
 
@@ -143,6 +146,8 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
               <Link to="/national" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">National</Link>
               <Link to="/states" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">States &amp; UTs</Link>
               <Link to="/business-sports" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">Business &amp; Sports</Link>
+              <Link to="/briefing" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">Ask AI &amp; Audio</Link>
+              <Link to="/timelines" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">News Timelines</Link>
               <Link to="/epaper" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">E-Paper Archive</Link>
               <Link to="/contact" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">Contact</Link>
               <Link to="/admin" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">Admin Desk</Link>
@@ -293,6 +298,9 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
           <div>
             <h3 className="text-sm font-semibold text-white mb-3">Editorial &amp; Portal</h3>
             <ul className="space-y-2 text-sm text-neutral-200">
+              <li><Link to="/briefing" className="hover:text-white hover:underline">Ask MAHEEP AI &amp; Audio</Link></li>
+              <li><Link to="/timelines" className="hover:text-white hover:underline">News Timelines &amp; Data</Link></li>
+              <li><Link to="/authors" className="hover:text-white hover:underline">Journalists &amp; Desks</Link></li>
               <li><Link to="/search" className="hover:text-white hover:underline">Global News Search</Link></li>
               <li><Link to="/contact" className="hover:text-white hover:underline">Contact &amp; Consultation</Link></li>
               <li><Link to="/admin" className="hover:text-white hover:underline">Editorial Admin Dashboard</Link></li>

@@ -22,6 +22,7 @@ export interface Article {
   summary: string;
   content: string;
   image_url: string;
+  image_rights?: string;
   source_name: string;
   source_url: string;
   author: string;
@@ -81,6 +82,10 @@ export interface ReaderUser {
   email: string;
   preferred_language: 'all' | 'en' | 'hi';
   font_size: 'sm' | 'md' | 'lg';
+  streak_days?: number;
+  last_read_date?: string;
+  last_epaper_edition?: string;
+  last_epaper_page?: number;
 }
 
 export interface EditionPage {
@@ -296,5 +301,72 @@ export interface SystemErrorLog {
   stack_summary: string;
   resolved: number | boolean;
   created_at: string;
+}
+
+export interface ReaderFollow {
+  id: string;
+  follow_type: 'category' | 'state' | 'author';
+  target_slug: string;
+  target_label: string;
+  created_at: string;
+}
+
+export interface ReaderEpaperBookmark {
+  id: string;
+  edition_date: string;
+  page_number: number;
+  section_title: string;
+  created_at: string;
+}
+
+export interface PollItem {
+  id: string;
+  question: string;
+  category: string;
+  language: string;
+  totalVotes: number;
+  options: Array<{ id: string; label: string; votes: number }>;
+}
+
+export interface TimelineEventItem {
+  id: string;
+  timeline_id: string;
+  event_date: string;
+  headline: string;
+  summary: string;
+  source_name: string;
+  source_url: string;
+}
+
+export interface TimelineItem {
+  id: string;
+  title: string;
+  slug: string;
+  topic: string;
+  summary: string;
+  updated_at: string;
+  events: TimelineEventItem[];
+}
+
+export interface ElectionUpdate {
+  id: string;
+  title: string;
+  region: string;
+  total_seats: number;
+  declared_seats: number;
+  summary: string;
+  data_json: string;
+  source_name: string;
+  source_url: string;
+  updated_at: string;
+}
+
+export interface AiCitation {
+  title: string;
+  slug: string;
+  source_name: string;
+  published_at: string;
+  category_name?: string;
+  state_name?: string;
 }
 

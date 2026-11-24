@@ -1,6 +1,6 @@
-import { BarChart3, Bell, CalendarClock, Check, Mail, MessageSquare, Send, Share2, Trash2, X } from 'lucide-react';
+import { BarChart3, Bell, CalendarClock, Check, Mail, MessageSquare, Send, Share2, Trash2, Vote, X } from 'lucide-react';
 import React, { useCallback, useEffect, useState } from 'react';
-import type { Article, CommentItem, NewsletterCampaign, SocialPostItem } from '../../types/news.ts';
+import type { Article, CommentItem, NewsletterCampaign, PollItem, SocialPostItem } from '../../types/news.ts';
 import { formatIndiaDateTime } from '../../utils/date.ts';
 
 interface AnalyticsPayload {
@@ -19,6 +19,10 @@ export function AdminCommunityPanel({ token, onRefreshOverview }: { token: strin
   const [campaigns, setCampaigns] = useState<NewsletterCampaign[]>([]);
   const [socialPosts, setSocialPosts] = useState<SocialPostItem[]>([]);
   const [recentArticles, setRecentArticles] = useState<Article[]>([]);
+  const [polls, setPolls] = useState<PollItem[]>([]);
+  const [pollQuestion, setPollQuestion] = useState('');
+  const [pollOptionsText, setPollOptionsText] = useState('Strongly Support, Neutral, Need More Review');
+  const pollCategory = 'National Policy';
 
   // Push alert state
   const [pushTitle, setPushTitle] = useState('');
@@ -55,18 +59,20 @@ export function AdminCommunityPanel({ token, onRefreshOverview }: { token: strin
 
   const loadData = useCallback(async () => {
     const headers = { Authorization: `Bearer ${token}` };
-    const [cRes, aRes, campRes, socRes, artRes] = await Promise.all([
+    const [cRes, aRes, campRes, socRes, artRes, pollRes] = await Promise.all([
       fetch('/api/admin/comments', { headers }),
       fetch('/api/admin/analytics', { headers }),
       fetch('/api/admin/newsletter/campaigns', { headers }),
       fetch('/api/admin/social-posts', { headers }),
       fetch('/api/admin/articles?status=published', { headers }),
+      fetch('/api/admin/polls', { headers }),
     ]);
     if (cRes.ok) setComments((await cRes.json()).comments || []);
     if (aRes.ok) setAnalytics(await aRes.json());
     if (campRes.ok) setCampaigns((await campRes.json()).campaigns || []);
     if (socRes.ok) setSocialPosts((await socRes.json()).posts || []);
     if (artRes.ok) setRecentArticles(((await artRes.json()).articles || []).slice(0, 20));
+    if (pollRes.ok) setPolls((await pollRes.json()).polls || []);
   }, [token]);
 
   useEffect(() => {
@@ -485,6 +491,82 @@ export function AdminCommunityPanel({ token, onRefreshOverview }: { token: strin
           </button>
         </div>
       </form>
+
+      {/* Reader Opinion Polls Manager */}
+      <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Vote className="w-4 h-4 text-[#00652E]" />
+          <h3 className="text-sm font-bold">Reader Polls &amp; Opinion Surveys</h3>
+        </div>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const opts = pollOptionsText
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const res = await fetch('/api/admin/polls', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ question: pollQuestion, category: pollCategory, options: opts }),
+            });
+            if (res.ok) {
+              setPollQuestion('');
+              setNotice('Reader opinion poll published.');
+              loadData();
+            }
+          }}
+          className="grid grid-cols-1 sm:grid-cols-6 gap-3 text-xs"
+        >
+          <input
+            type="text"
+            required
+            value={pollQuestion}
+            onChange={(e) => setPollQuestion(e.target.value)}
+            placeholder="Poll question for readers..."
+            className="sm:col-span-3 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+          />
+          <input
+            type="text"
+            required
+            value={pollOptionsText}
+            onChange={(e) => setPollOptionsText(e.target.value)}
+            placeholder="Comma-separated options..."
+            className="sm:col-span-2 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+          />
+          <button type="submit" className="px-3 py-2 rounded bg-[#00652E] text-white font-semibold">
+            Launch Poll
+          </button>
+        </form>
+        {polls.length > 0 && (
+          <div className="divide-y divide-neutral-100 dark:divide-neutral-800 text-xs">
+            {polls.map((p) => (
+              <div key={p.id} className="py-2.5 flex items-center justify-between gap-2">
+                <div>
+                  <div className="font-semibold">{p.question}</div>
+                  <div className="text-neutral-500">
+                    {p.options.map((o) => `${o.label} (${o.votes})`).join(' · ')}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await fetch(`/api/admin/polls/${p.id}`, {
+                      method: 'DELETE',
+                      headers: { Authorization: `Bearer ${token}` },
+                    });
+                    loadData();
+                  }}
+                  className="text-[#DF2525] p-1"
+                  aria-label="Delete poll"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Moderated Reader Comments */}
       <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-3">

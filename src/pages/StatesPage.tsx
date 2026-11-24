@@ -1,6 +1,7 @@
 import { MapPin, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { IndiaNewsMap } from '../components/IndiaNewsMap.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
@@ -96,6 +97,9 @@ export function StatesPage() {
             </Link>
           )}
         </div>
+
+        {/* Interactive India News Map & State Spotlight */}
+        <IndiaNewsMap states={states} selectedSlug={slug} />
 
         {/* Search & Filter Directory */}
         <section className="space-y-4">
