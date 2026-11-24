@@ -1,6 +1,6 @@
-import { BarChart3, Bell, Check, MessageSquare, Trash2, X } from 'lucide-react';
+import { BarChart3, Bell, CalendarClock, Check, Mail, MessageSquare, Send, Share2, Trash2, X } from 'lucide-react';
 import React, { useCallback, useEffect, useState } from 'react';
-import type { CommentItem } from '../../types/news.ts';
+import type { Article, CommentItem, NewsletterCampaign, SocialPostItem } from '../../types/news.ts';
 import { formatIndiaDateTime } from '../../utils/date.ts';
 
 interface AnalyticsPayload {
@@ -16,24 +16,57 @@ interface AnalyticsPayload {
 export function AdminCommunityPanel({ token, onRefreshOverview }: { token: string; onRefreshOverview: () => void }) {
   const [comments, setComments] = useState<CommentItem[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsPayload | null>(null);
+  const [campaigns, setCampaigns] = useState<NewsletterCampaign[]>([]);
+  const [socialPosts, setSocialPosts] = useState<SocialPostItem[]>([]);
+  const [recentArticles, setRecentArticles] = useState<Article[]>([]);
+
+  // Push alert state
   const [pushTitle, setPushTitle] = useState('');
   const [pushBody, setPushBody] = useState('');
   const [pushUrl, setPushUrl] = useState('/');
   const [pushLang, setPushLang] = useState<'all' | 'en' | 'hi'>('all');
+
+  // Newsletter campaign composer state
+  const [campSubject, setCampSubject] = useState('');
+  const [campIntro, setCampIntro] = useState('');
+  const [campLang, setCampLang] = useState<'all' | 'en' | 'hi'>('all');
+  const [sendingCamp, setSendingCamp] = useState(false);
+
+  // Social post scheduler state
+  const [socPlatform, setSocPlatform] = useState<'x' | 'whatsapp' | 'facebook' | 'linkedin' | 'telegram'>('x');
+  const [socArticleId, setSocArticleId] = useState('');
+  const [socMessage, setSocMessage] = useState('');
+  const [socUrl, setSocUrl] = useState('');
+  const [socScheduledAt, setSocScheduledAt] = useState(() => {
+    const d = new Date(Date.now() + 3600_000);
+    return new Intl.DateTimeFormat('sv-SE', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+      .format(d)
+      .replace(' ', 'T');
+  });
+
   const [notice, setNotice] = useState('');
 
   const loadData = useCallback(async () => {
-    const [cRes, aRes] = await Promise.all([
-      fetch('/api/admin/comments', { headers: { Authorization: `Bearer ${token}` } }),
-      fetch('/api/admin/analytics', { headers: { Authorization: `Bearer ${token}` } }),
+    const headers = { Authorization: `Bearer ${token}` };
+    const [cRes, aRes, campRes, socRes, artRes] = await Promise.all([
+      fetch('/api/admin/comments', { headers }),
+      fetch('/api/admin/analytics', { headers }),
+      fetch('/api/admin/newsletter/campaigns', { headers }),
+      fetch('/api/admin/social-posts', { headers }),
+      fetch('/api/admin/articles?status=published', { headers }),
     ]);
-    if (cRes.ok) {
-      const cJson = await cRes.json();
-      setComments(cJson.comments || []);
-    }
-    if (aRes.ok) {
-      setAnalytics(await aRes.json());
-    }
+    if (cRes.ok) setComments((await cRes.json()).comments || []);
+    if (aRes.ok) setAnalytics(await aRes.json());
+    if (campRes.ok) setCampaigns((await campRes.json()).campaigns || []);
+    if (socRes.ok) setSocialPosts((await socRes.json()).posts || []);
+    if (artRes.ok) setRecentArticles(((await artRes.json()).articles || []).slice(0, 20));
   }, [token]);
 
   useEffect(() => {
@@ -75,6 +108,54 @@ export function AdminCommunityPanel({ token, onRefreshOverview }: { token: strin
     }
   };
 
+  const sendCampaign = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSendingCamp(true);
+    setNotice('');
+    try {
+      const res = await fetch('/api/admin/newsletter/campaigns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ subject: campSubject, intro_text: campIntro, language: campLang }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setNotice(`Newsletter campaign queued: ${json.sent} sent, ${json.skipped} skipped (SMTP), ${json.failed} failed across ${json.totalTargets} subscribers.`);
+        setCampSubject('');
+        setCampIntro('');
+        loadData();
+      }
+    } finally {
+      setSendingCamp(false);
+    }
+  };
+
+  const scheduleSocialPost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNotice('');
+    const isoUtc = socScheduledAt ? new Date(`${socScheduledAt}:00+05:30`).toISOString() : new Date().toISOString();
+    const res = await fetch('/api/admin/social-posts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        platform: socPlatform,
+        article_id: socArticleId,
+        message: socMessage,
+        share_url: socUrl,
+        scheduled_at: isoUtc,
+      }),
+    });
+    if (res.ok) {
+      setNotice('Social media post scheduled in newsroom queue.');
+      setSocMessage('');
+      setSocUrl('');
+      setSocArticleId('');
+      loadData();
+    }
+  };
+
+  const maxDailyViews = Math.max(1, ...(analytics?.dailyViews || []).map((d) => d.views));
+
   return (
     <div className="space-y-6">
       {notice && (
@@ -105,6 +186,27 @@ export function AdminCommunityPanel({ token, onRefreshOverview }: { token: strin
             </div>
           </div>
 
+          {analytics.dailyViews.length > 0 && (
+            <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5">
+              <h3 className="text-sm font-bold mb-3">14-Day Readership Trend (IST)</h3>
+              <div className="flex items-end gap-2 h-28 pt-2">
+                {analytics.dailyViews.map((d) => (
+                  <div key={d.day} className="flex-1 flex flex-col items-center gap-1 min-w-0">
+                    <span className="text-[10px] font-mono-tabular text-neutral-500">{d.views}</span>
+                    <div
+                      className="w-full rounded-t bg-[#00652E] dark:bg-[#159B42] transition-all"
+                      style={{ height: `${Math.max(8, Math.round((d.views / maxDailyViews) * 72))}px` }}
+                      title={`${d.day}: ${d.views} views`}
+                    />
+                    <span className="text-[10px] font-mono-tabular text-neutral-500 truncate w-full text-center">
+                      {d.day.slice(5)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5">
               <div className="flex items-center gap-2 mb-3">
@@ -122,8 +224,8 @@ export function AdminCommunityPanel({ token, onRefreshOverview }: { token: strin
             </div>
 
             <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5">
-              <h3 className="text-sm font-bold mb-3">Category Reach</h3>
-              <div className="divide-y divide-neutral-100 dark:divide-neutral-800 text-xs">
+              <h3 className="text-sm font-bold mb-3">Category Reach &amp; Language Split</h3>
+              <div className="divide-y divide-neutral-100 dark:divide-neutral-800 text-xs mb-3">
                 {analytics.categoryTotals.map((cat) => (
                   <div key={cat.category} className="py-2 flex items-center justify-between">
                     <span className="font-semibold">{cat.category}</span>
@@ -133,10 +235,203 @@ export function AdminCommunityPanel({ token, onRefreshOverview }: { token: strin
                   </div>
                 ))}
               </div>
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-neutral-100 dark:border-neutral-800 text-xs">
+                {analytics.languageSplit.map((l) => (
+                  <span key={l.language} className="px-2.5 py-1 rounded bg-[#EAF5E5] dark:bg-neutral-800 font-semibold">
+                    {l.language === 'hi' ? 'Hindi' : 'English'}: {l.count} stories · {l.views} views
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* Scheduled Social Media Posts Queue */}
+      <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Share2 className="w-4 h-4 text-[#00652E]" />
+          <h3 className="text-sm font-bold">Scheduled Social Media Posts</h3>
+        </div>
+        <form onSubmit={scheduleSocialPost} className="grid grid-cols-1 sm:grid-cols-6 gap-3 text-xs">
+          <select
+            value={socPlatform}
+            onChange={(e) => setSocPlatform(e.target.value as 'x' | 'whatsapp' | 'facebook' | 'linkedin' | 'telegram')}
+            className="px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+          >
+            <option value="x">X (Twitter)</option>
+            <option value="whatsapp">WhatsApp Channel</option>
+            <option value="facebook">Facebook</option>
+            <option value="telegram">Telegram</option>
+            <option value="linkedin">LinkedIn</option>
+          </select>
+          <select
+            value={socArticleId}
+            onChange={(e) => {
+              const id = e.target.value;
+              setSocArticleId(id);
+              const found = recentArticles.find((a) => a.id === id);
+              if (found) {
+                setSocMessage(`${found.title} — ${found.summary.slice(0, 140)}`);
+                setSocUrl(`/news/${found.slug}`);
+              }
+            }}
+            className="sm:col-span-2 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+          >
+            <option value="">Link an article (optional)...</option>
+            {recentArticles.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.title.slice(0, 65)}
+              </option>
+            ))}
+          </select>
+          <input
+            type="datetime-local"
+            value={socScheduledAt}
+            onChange={(e) => setSocScheduledAt(e.target.value)}
+            className="sm:col-span-2 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+            title="Schedule time (IST)"
+          />
+          <button type="submit" className="px-3 py-2 rounded bg-[#00652E] text-white font-semibold inline-flex items-center justify-center gap-1">
+            <CalendarClock className="w-3.5 h-3.5" /> Schedule
+          </button>
+          <input
+            type="text"
+            required
+            value={socMessage}
+            onChange={(e) => setSocMessage(e.target.value)}
+            placeholder="Post caption & hashtags..."
+            className="sm:col-span-4 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+          />
+          <input
+            type="text"
+            value={socUrl}
+            onChange={(e) => setSocUrl(e.target.value)}
+            placeholder="Target article URL (/news/...)"
+            className="sm:col-span-2 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+          />
+        </form>
+
+        {socialPosts.length > 0 && (
+          <div className="divide-y divide-neutral-100 dark:divide-neutral-800 text-xs max-h-56 overflow-y-auto">
+            {socialPosts.map((sp) => (
+              <div key={sp.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <span className="uppercase font-bold text-[#00652E] mr-2">[{sp.platform}]</span>
+                  <span
+                    className={`mr-2 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                      sp.status === 'ready'
+                        ? 'bg-amber-100 text-amber-800'
+                        : sp.status === 'posted'
+                        ? 'bg-[#EAF5E5] text-[#00652E]'
+                        : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600'
+                    }`}
+                  >
+                    {sp.status}
+                  </span>
+                  <span className="font-medium">{sp.message}</span>
+                  <div className="text-[11px] text-neutral-500 font-mono-tabular mt-0.5">
+                    IST: {formatIndiaDateTime(sp.scheduled_at)}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {sp.status !== 'posted' && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await fetch(`/api/admin/social-posts/${sp.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                          body: JSON.stringify({ status: 'posted' }),
+                        });
+                        loadData();
+                      }}
+                      className="px-2 py-1 rounded bg-[#00652E] text-white font-semibold"
+                    >
+                      Mark Posted
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await fetch(`/api/admin/social-posts/${sp.id}`, {
+                        method: 'DELETE',
+                        headers: { Authorization: `Bearer ${token}` },
+                      });
+                      loadData();
+                    }}
+                    className="text-[#DF2525] p-1"
+                    aria-label="Delete scheduled social post"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Newsletter Campaign Composer & Log */}
+      <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Mail className="w-4 h-4 text-[#00652E]" />
+          <h3 className="text-sm font-bold">Newsletter Campaign Composer</h3>
+        </div>
+        <form onSubmit={sendCampaign} className="space-y-3 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <input
+              type="text"
+              required
+              value={campSubject}
+              onChange={(e) => setCampSubject(e.target.value)}
+              placeholder="Campaign subject line (e.g. Weekend Special Edition)..."
+              className="sm:col-span-2 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+            />
+            <select
+              value={campLang}
+              onChange={(e) => setCampLang(e.target.value as 'all' | 'en' | 'hi')}
+              className="px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+            >
+              <option value="all">All Confirmed Subscribers</option>
+              <option value="en">English Subscribers</option>
+              <option value="hi">Hindi Subscribers</option>
+            </select>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              type="text"
+              value={campIntro}
+              onChange={(e) => setCampIntro(e.target.value)}
+              placeholder="Editorial intro note included above the latest 5 headlines..."
+              className="flex-1 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+            />
+            <button
+              type="submit"
+              disabled={sendingCamp}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded bg-[#00652E] text-white font-semibold shrink-0"
+            >
+              <Send className="w-3.5 h-3.5" />
+              {sendingCamp ? 'Sending...' : 'Send Campaign'}
+            </button>
+          </div>
+        </form>
+        {campaigns.length > 0 && (
+          <div className="divide-y divide-neutral-100 dark:divide-neutral-800 text-xs max-h-40 overflow-y-auto">
+            {campaigns.map((c) => (
+              <div key={c.id} className="py-2 flex items-center justify-between gap-2">
+                <div>
+                  <span className="font-semibold">{c.subject}</span>{' '}
+                  <span className="text-neutral-500">({c.language})</span>
+                </div>
+                <span className="font-mono-tabular text-neutral-500">
+                  Sent: {c.sent_count} · Failed: {c.failed_count} · {formatIndiaDateTime(c.sent_at)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Breaking News Push Broadcast */}
       <form

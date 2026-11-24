@@ -1,0 +1,93 @@
+name: Maheep Newsroom Automation Cron
+
+# Free external cron runner using GitHub Actions (IST = UTC + 05:30).
+# Configure two Repository Secrets in GitHub -> Settings -> Secrets and variables -> Actions:
+#   1. APP_URL: https://your-render-service.onrender.com (no trailing slash)
+#   2. CRON_SECRET: must match CRON_SECRET in Render Environment Variables
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_name:
+        description: 'Job to trigger immediately'
+        required: true
+        default: 'health_monitor'
+        type: choice
+        options:
+          - rss_collect
+          - rss_retry_failed
+          - publish_scheduled
+          - ai_audit_pending
+          - epaper_daily
+          - digest_daily
+          - email_retry
+          - db_backup
+          - health_monitor
+          - weekly_report
+          - cleanup_weekly
+  schedule:
+    # Every 30 minutes: RSS collection + scheduled article publish/unpublish + failed retry
+    - cron: '*/30 * * * *'
+    # Hourly (at :05): advisory AI quality audit on pending articles
+    - cron: '5 * * * *'
+    # Daily 06:00 AM IST (00:30 UTC): Generate E-Paper edition
+    - cron: '30 0 * * *'
+    # Daily 07:00 AM IST (01:30 UTC): Send morning newsletter digest
+    - cron: '30 1 * * *'
+    # Every 12 hours (00:00 & 12:00 UTC): System health monitor & DB backup
+    - cron: '0 */12 * * *'
+    # Every Sunday 08:00 AM IST (02:30 UTC): Weekly analytics report + cleanup
+    - cron: '30 2 * * 0'
+
+jobs:
+  trigger-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine jobs for schedule
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_JOB: ${{ github.event.inputs.job_name }}
+          CRON_EXPR: ${{ github.event.schedule }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "jobs=$INPUT_JOB" >> "$GITHUB_OUTPUT"
+          elif [ "$CRON_EXPR" = "*/30 * * * *" ]; then
+            echo "jobs=publish_scheduled rss_collect rss_retry_failed email_retry" >> "$GITHUB_OUTPUT"
+          elif [ "$CRON_EXPR" = "5 * * * *" ]; then
+            echo "jobs=ai_audit_pending" >> "$GITHUB_OUTPUT"
+          elif [ "$CRON_EXPR" = "30 0 * * *" ]; then
+            echo "jobs=epaper_daily" >> "$GITHUB_OUTPUT"
+          elif [ "$CRON_EXPR" = "30 1 * * *" ]; then
+            echo "jobs=digest_daily" >> "$GITHUB_OUTPUT"
+          elif [ "$CRON_EXPR" = "0 */12 * * *" ]; then
+            echo "jobs=health_monitor db_backup" >> "$GITHUB_OUTPUT"
+          elif [ "$CRON_EXPR" = "30 2 * * 0" ]; then
+            echo "jobs=weekly_report cleanup_weekly" >> "$GITHUB_OUTPUT"
+          else
+            echo "jobs=health_monitor" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Call Maheep Cron API
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          JOBS_TO_RUN: ${{ steps.plan.outputs.jobs }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL or CRON_SECRET GitHub secret is missing. Configure them in Repository Settings -> Secrets -> Actions."
+            exit 0
+          fi
+          BASE_URL="${APP_URL%/}"
+          for JOB in $JOBS_TO_RUN; do
+            echo "Triggering $JOB..."
+            STATUS=$(curl -sS -o /tmp/resp.json -w "%{http_code}" -X POST \
+              -H "x-cron-secret: $CRON_SECRET" \
+              "$BASE_URL/api/cron/$JOB")
+            echo "HTTP $STATUS:"
+            cat /tmp/resp.json
+            echo ""
+            if [ "$STATUS" -ge 400 ]; then
+              exit 1
+            fi
+          done

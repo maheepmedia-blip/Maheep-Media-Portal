@@ -23,7 +23,11 @@ export function isSmtpConfigured(): boolean {
 }
 
 function getPublicBaseUrl(fallbackOrigin?: string): string {
-  const appUrl = process.env.APP_URL?.trim();
+  const customDomain = getSetting('custom_domain', '').trim();
+  if (customDomain && /^https?:\/\//i.test(customDomain)) {
+    return customDomain.replace(/\/$/, '');
+  }
+  const appUrl = process.env.APP_URL?.trim() || process.env.RENDER_EXTERNAL_URL?.trim();
   if (appUrl && appUrl !== 'MY_APP_URL') {
     return appUrl.replace(/\/$/, '');
   }
@@ -43,7 +47,12 @@ async function sendLoggedEmail(input: {
   const user = process.env.SMTP_USER?.trim();
   const pass = process.env.SMTP_PASS?.trim();
   const port = Number(process.env.SMTP_PORT || '587');
-  const from = process.env.SMTP_FROM?.trim() || 'Maheep News Portal <noreply@maheepnews.in>';
+  const brandName = getSetting('branded_sender_name', '').trim();
+  const brandEmail = getSetting('branded_sender_email', '').trim();
+  const from =
+    brandName && brandEmail
+      ? `${brandName} <${brandEmail}>`
+      : process.env.SMTP_FROM?.trim() || 'Maheep News Portal <noreply@maheepnews.in>';
   const logId = input.existingLogId || `eml-${crypto.randomUUID().slice(0, 10)}`;
 
   if (!host || !user || !pass) {
@@ -338,3 +347,65 @@ export async function retryFailedEmails(limit = 10): Promise<{ attempted: number
   }
   return { attempted: rows.length, succeeded };
 }
+
+export async function sendCustomNewsletterCampaign(input: {
+  subject: string;
+  introText: string;
+  language: 'all' | 'en' | 'hi';
+  articleIds: string[];
+}): Promise<{ totalTargets: number; sent: number; failed: number; skipped: number }> {
+  const baseUrl = getPublicBaseUrl();
+  const subscribers = (
+    input.language === 'all'
+      ? db.prepare("SELECT email, unsubscribe_token, id FROM newsletter_subscribers WHERE status = 'active' AND confirmed = 1").all()
+      : db
+          .prepare(
+            "SELECT email, unsubscribe_token, id FROM newsletter_subscribers WHERE status = 'active' AND confirmed = 1 AND (language_pref = 'all' OR language_pref = ?)",
+          )
+          .all(input.language)
+  ) as Array<{ email: string; unsubscribe_token: string; id: string }>;
+
+  let articles: Array<{ title: string; slug: string; summary: string }> = [];
+  if (input.articleIds.length > 0) {
+    const placeholders = input.articleIds.map(() => '?').join(',');
+    articles = db
+      .prepare(`SELECT title, slug, summary FROM articles WHERE id IN (${placeholders}) AND status = 'published'`)
+      .all(...input.articleIds) as Array<{ title: string; slug: string; summary: string }>;
+  } else {
+    articles = db
+      .prepare("SELECT title, slug, summary FROM articles WHERE status = 'published' ORDER BY published_at DESC LIMIT 5")
+      .all() as Array<{ title: string; slug: string; summary: string }>;
+  }
+
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  for (const sub of subscribers) {
+    const unsubUrl = `${baseUrl}/api/newsletter/unsubscribe/${encodeURIComponent(sub.unsubscribe_token || sub.id)}`;
+    const text = [
+      'MAHEEP NEWS PORTAL — Editorial Newsletter',
+      input.introText,
+      '',
+      ...articles.map((a, idx) => `${idx + 1}. ${a.title}\n   ${baseUrl}/news/${a.slug}\n   ${a.summary}`),
+      '',
+      `Visit Portal: ${baseUrl}`,
+      `Unsubscribe: ${unsubUrl}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const res = await sendLoggedEmail({
+      to: sub.email,
+      subject: input.subject,
+      templateType: 'newsletter_campaign',
+      text,
+    });
+    if (res.sent) sent++;
+    else if (!isSmtpConfigured()) skipped++;
+    else failed++;
+  }
+
+  return { totalTargets: subscribers.length, sent, failed, skipped };
+}
+

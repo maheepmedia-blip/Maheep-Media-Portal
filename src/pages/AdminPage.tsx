@@ -37,6 +37,7 @@ import type {
   AdminUser,
   Advertisement,
   Article,
+  AuthorProfile,
   Category,
   ContactSubmission,
   Edition,
@@ -87,6 +88,14 @@ export function AdminPage() {
     pushSubscribers?: number;
     rssSources: RssSource[];
     recentLogs: RssLog[];
+    alerts?: {
+      failedFeeds: number;
+      unresolvedErrors: number;
+      commentsPending: number;
+      contactsNew: number;
+      breakingCandidatesCount: number;
+      breakingCandidatesList: Array<{ id: string; title: string; slug: string; source_name: string }>;
+    };
     scheduling: {
       lastRunAt: string;
       nextRunAt: string;
@@ -106,6 +115,7 @@ export function AdminPage() {
   const [subscribers, setSubscribers] = useState<Array<{ id: string; email: string; status: string; created_at: string }>>([]);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [authors, setAuthors] = useState<AuthorProfile[]>([]);
 
   // Filter & Selection state
   const [artSearch, setArtSearch] = useState('');
@@ -126,6 +136,12 @@ export function AdminPage() {
   );
   const [newCatName, setNewCatName] = useState('');
   const [newCatDesc, setNewCatDesc] = useState('');
+
+  const [newAuthorName, setNewAuthorName] = useState('');
+  const [newAuthorRole, setNewAuthorRole] = useState('Correspondent');
+  const [newAuthorBeat, setNewAuthorBeat] = useState('National Desk');
+  const [newAuthorBio, setNewAuthorBio] = useState('');
+  const [newAuthorEmail, setNewAuthorEmail] = useState('');
 
   const [newAdminName, setNewAdminName] = useState('');
   const [newAdminEmail, setNewAdminEmail] = useState('');
@@ -154,7 +170,7 @@ export function AdminPage() {
   const loadAll = useCallback(async () => {
     if (!adminToken) return;
     try {
-      const [ov, art, cat, st, rss, ed, adRes, cnt, sub, setRes] = await Promise.all([
+      const [ov, art, cat, st, rss, ed, adRes, cnt, sub, setRes, authRes] = await Promise.all([
         authFetch('/api/admin/overview').then((r) => r.json()),
         authFetch(
           `/api/admin/articles?status=${artStatus}&language=${artLang}&q=${encodeURIComponent(artSearch)}`,
@@ -167,6 +183,7 @@ export function AdminPage() {
         authFetch('/api/admin/contacts').then((r) => r.json()),
         authFetch('/api/admin/subscribers').then((r) => r.json()),
         authFetch('/api/admin/settings').then((r) => r.json()),
+        authFetch('/api/admin/authors').then((r) => r.json()),
       ]);
 
       setOverview(ov);
@@ -180,6 +197,7 @@ export function AdminPage() {
       setContacts(cnt.contacts || []);
       setSubscribers(sub.subscribers || []);
       setSettings(setRes.settings || {});
+      setAuthors(authRes.authors || []);
 
       if (adminUser?.role === 'super_admin' || adminUser?.role === 'admin') {
         const usrRes = await authFetch('/api/admin/users');
@@ -466,6 +484,59 @@ export function AdminPage() {
           {/* TAB: OVERVIEW */}
           {activeTab === 'overview' && overview && (
             <div className="space-y-6">
+              {overview.alerts &&
+                (overview.alerts.breakingCandidatesCount > 0 ||
+                  overview.alerts.failedFeeds > 0 ||
+                  overview.alerts.unresolvedErrors > 0 ||
+                  overview.alerts.commentsPending > 0) && (
+                  <div className="p-4 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 space-y-2">
+                    <div className="text-xs font-bold uppercase tracking-wide text-amber-900 dark:text-amber-300">
+                      Newsroom Alerts for Administrators
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      {overview.alerts.breakingCandidatesCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setArtStatus('breaking_candidate');
+                            setActiveTab('articles');
+                          }}
+                          className="px-2.5 py-1 rounded bg-[#DF2525] text-white font-semibold"
+                        >
+                          {overview.alerts.breakingCandidatesCount} Breaking Candidate(s) to Review
+                        </button>
+                      )}
+                      {overview.alerts.failedFeeds > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('rss')}
+                          className="px-2.5 py-1 rounded bg-amber-600 text-white font-semibold"
+                        >
+                          {overview.alerts.failedFeeds} RSS Feed(s) Need Attention
+                        </button>
+                      )}
+                      {overview.alerts.commentsPending > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('community')}
+                          className="px-2.5 py-1 rounded bg-[#00652E] text-white font-semibold"
+                        >
+                          {overview.alerts.commentsPending} Reader Comment(s) Pending Moderation
+                        </button>
+                      )}
+                      {overview.alerts.unresolvedErrors > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('system')}
+                          className="px-2.5 py-1 rounded border border-red-400 text-[#DF2525] font-semibold"
+                        >
+                          {overview.alerts.unresolvedErrors} Open Runtime Error(s)
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 {[
                   ['Total Articles', overview.stats.totalArticles],
@@ -1114,6 +1185,103 @@ export function AdminPage() {
                   ))}
                 </div>
               </div>
+
+              <div className="lg:col-span-2 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base font-bold">Journalists &amp; Author Profiles ({authors.length})</h2>
+                  <Link to="/authors" target="_blank" className="text-xs font-semibold text-[#00652E] hover:underline">
+                    View Public Directory
+                  </Link>
+                </div>
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const res = await authFetch('/api/admin/authors', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        name: newAuthorName,
+                        role_title: newAuthorRole,
+                        beat: newAuthorBeat,
+                        bio: newAuthorBio,
+                        email: newAuthorEmail,
+                      }),
+                    });
+                    if (res.ok) {
+                      setNewAuthorName('');
+                      setNewAuthorBio('');
+                      setNewAuthorEmail('');
+                      flash('Journalist profile added.');
+                      loadAll();
+                    }
+                  }}
+                  className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs"
+                >
+                  <input
+                    type="text"
+                    required
+                    value={newAuthorName}
+                    onChange={(e) => setNewAuthorName(e.target.value)}
+                    placeholder="Journalist name *"
+                    className="px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                  />
+                  <input
+                    type="text"
+                    value={newAuthorRole}
+                    onChange={(e) => setNewAuthorRole(e.target.value)}
+                    placeholder="Title (e.g. Senior Editor)"
+                    className="px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                  />
+                  <input
+                    type="text"
+                    value={newAuthorBeat}
+                    onChange={(e) => setNewAuthorBeat(e.target.value)}
+                    placeholder="Coverage beat"
+                    className="px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                  />
+                  <input
+                    type="email"
+                    value={newAuthorEmail}
+                    onChange={(e) => setNewAuthorEmail(e.target.value)}
+                    placeholder="Desk email (optional)"
+                    className="px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                  />
+                  <input
+                    type="text"
+                    value={newAuthorBio}
+                    onChange={(e) => setNewAuthorBio(e.target.value)}
+                    placeholder="Short journalist bio..."
+                    className="sm:col-span-3 px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                  />
+                  <button type="submit" className="px-3 py-1.5 rounded bg-[#00652E] text-white font-semibold">
+                    Add Journalist
+                  </button>
+                </form>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  {authors.map((au) => (
+                    <div key={au.id} className="p-3 rounded border border-neutral-200 dark:border-neutral-800 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-bold">
+                          {au.name}{' '}
+                          <span className="font-normal text-[#00652E]">({au.role_title})</span>
+                        </div>
+                        <div className="text-neutral-500">{au.beat} · {au.article_count ?? 0} articles</div>
+                        {au.bio && <p className="text-neutral-600 dark:text-neutral-400 mt-1">{au.bio}</p>}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await authFetch(`/api/admin/authors/${au.id}`, { method: 'DELETE' });
+                          loadAll();
+                        }}
+                        className="text-[#DF2525] underline shrink-0"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -1222,6 +1390,38 @@ export function AdminPage() {
                     className="w-full px-3 py-2 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
                   />
                 </div>
+                <div>
+                  <label className="block text-xs font-semibold mb-1">Custom Domain URL (optional, e.g. https://maheepnews.in)</label>
+                  <input
+                    type="url"
+                    value={settings.custom_domain || ''}
+                    onChange={(e) => setSettings((s) => ({ ...s, custom_domain: e.target.value }))}
+                    placeholder="https://maheepnews.in"
+                    className="w-full px-3 py-2 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Branded Email Sender Name</label>
+                    <input
+                      type="text"
+                      value={settings.branded_sender_name || ''}
+                      onChange={(e) => setSettings((s) => ({ ...s, branded_sender_name: e.target.value }))}
+                      placeholder="Maheep News Portal"
+                      className="w-full px-3 py-2 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Branded Sender Email</label>
+                    <input
+                      type="email"
+                      value={settings.branded_sender_email || ''}
+                      onChange={(e) => setSettings((s) => ({ ...s, branded_sender_email: e.target.value }))}
+                      placeholder="editorial@maheepnews.in"
+                      className="w-full px-3 py-2 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                    />
+                  </div>
+                </div>
                 <button
                   type="button"
                   onClick={() =>
@@ -1229,6 +1429,9 @@ export function AdminPage() {
                       tagline_hi: settings.tagline_hi || '',
                       tagline_en: settings.tagline_en || '',
                       admin_email: settings.admin_email || 'maheepmedia@gmail.com',
+                      custom_domain: settings.custom_domain || '',
+                      branded_sender_name: settings.branded_sender_name || '',
+                      branded_sender_email: settings.branded_sender_email || '',
                     })
                   }
                   className="px-4 py-2 rounded bg-[#00652E] text-white text-xs font-semibold"

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { recordSystemError } from './audit.ts';
 import { createVerifiedBackup, getStorageHealth, pruneOldBackups } from './backup.ts';
 import { db, getSetting, setSetting } from './db.ts';
 import { retryFailedEmails, sendDailyDigestToSubscribers, sendSystemAlertEmail } from './email.ts';
@@ -16,6 +17,7 @@ export type JobName =
   | 'email_retry'
   | 'db_backup'
   | 'health_monitor'
+  | 'weekly_report'
   | 'cleanup_weekly';
 
 export const ALL_JOB_NAMES: JobName[] = [
@@ -28,6 +30,7 @@ export const ALL_JOB_NAMES: JobName[] = [
   'email_retry',
   'db_backup',
   'health_monitor',
+  'weekly_report',
   'cleanup_weekly',
 ];
 
@@ -77,7 +80,7 @@ function releaseLock(jobName: string, ownerId: string): void {
   db.prepare('DELETE FROM job_locks WHERE job_name = ? AND owner_id = ?').run(jobName, ownerId);
 }
 
-export function processScheduledArticles(): { published: number; unpublished: number } {
+export function processScheduledArticles(): { published: number; unpublished: number; socialReady: number } {
   const nowIso = new Date().toISOString();
 
   // 1. Publish scheduled articles (only non-archived articles whose scheduled_at has arrived)
@@ -139,7 +142,17 @@ export function processScheduledArticles(): { published: number; unpublished: nu
     unpublished++;
   }
 
-  return { published, unpublished };
+  // 3. Move due scheduled social posts to 'ready' queue
+  const socialRes = db
+    .prepare(`
+      UPDATE social_posts
+      SET status = 'ready'
+      WHERE status = 'scheduled'
+        AND datetime(scheduled_at) <= datetime(?)
+    `)
+    .run(nowIso);
+
+  return { published, unpublished, socialReady: socialRes.changes };
 }
 
 function cleanupOldRecords(): { analyticsDeleted: number; cronDeleted: number; locksDeleted: number } {
@@ -200,20 +213,26 @@ export async function runManagedJob(
       summary = results.length === 0 ? 'No failed feeds to retry.' : `Retried ${results.length} failed feeds; ${recovered} succeeded.`;
     } else if (jobName === 'publish_scheduled') {
       const res = processScheduledArticles();
-      summary = `Published ${res.published} scheduled, archived ${res.unpublished} expired articles.`;
+      summary = `Published ${res.published} scheduled, archived ${res.unpublished} expired articles, ${res.socialReady} social posts ready.`;
     } else if (jobName === 'ai_audit_pending') {
       const res = await runPendingArticlesAiAudit(5);
       summary = res.skippedNoKey
         ? 'Skipped pending AI audit (GEMINI_API_KEY not configured).'
         : `Audited ${res.checked} pending articles with advisory quality checks.`;
     } else if (jobName === 'epaper_daily') {
-      const todayIst = getIstParts().dateStr;
+      const ist = getIstParts();
+      const todayIst = ist.dateStr;
       try {
         generateEditionForDate(todayIst);
         summary = `Generated daily E-Paper edition for ${todayIst} IST.`;
       } catch (err) {
-        // Retry with yesterday if early morning 6 AM IST has no new morning dispatches yet
-        const msg = err instanceof Error ? err.message : 'No articles yet';
+        const msg = err instanceof Error ? err.message : 'E-Paper generation error';
+        if (ist.hour >= 9 || triggerSource !== 'internal') {
+          void sendSystemAlertEmail(
+            `E-Paper Daily Generation Attention (${todayIst})`,
+            `Date (IST): ${todayIst}\nTrigger: ${triggerSource}\nNote: ${msg}`,
+          );
+        }
         summary = `E-Paper skipped for ${todayIst}: ${msg}`;
       }
     } else if (jobName === 'digest_daily') {
@@ -232,6 +251,43 @@ export async function runManagedJob(
         throw new Error(`SQLite integrity check failed: ${health.integrity}`);
       }
       summary = `DB integrity ok · ${(health.dbSizeBytes / 1024).toFixed(1)} KB · ${health.backupFiles} backups.`;
+    } else if (jobName === 'weekly_report') {
+      const pubWeek = (
+        db
+          .prepare("SELECT COUNT(*) as c FROM articles WHERE status = 'published' AND published_at >= datetime('now', '-7 days')")
+          .get() as { c: number }
+      ).c;
+      const viewsWeek = (
+        db
+          .prepare("SELECT COUNT(*) as c FROM analytics_events WHERE event_type = 'article_view' AND created_at >= datetime('now', '-7 days')")
+          .get() as { c: number }
+      ).c;
+      const subsActive = (
+        db
+          .prepare("SELECT COUNT(*) as c FROM newsletter_subscribers WHERE status = 'active' AND confirmed = 1")
+          .get() as { c: number }
+      ).c;
+      const commentsPending = (
+        db.prepare("SELECT COUNT(*) as c FROM comments WHERE status = 'pending'").get() as { c: number }
+      ).c;
+      const rssImportedWeek = (
+        db
+          .prepare("SELECT COALESCE(SUM(items_imported), 0) as s FROM rss_import_logs WHERE started_at >= datetime('now', '-7 days')")
+          .get() as { s: number }
+      ).s;
+      summary = `7-day report: ${pubWeek} published articles, ${rssImportedWeek} RSS imports, ${viewsWeek} tracked views, ${subsActive} confirmed subscribers, ${commentsPending} comments pending.`;
+      await sendSystemAlertEmail(
+        `Maheep Media Weekly Analytics Report (${getIstParts().dateStr} IST)`,
+        [
+          'Maheep News Portal — Weekly Automated Newsroom Report',
+          `Date (IST): ${getIstParts().dateStr}`,
+          `Published Articles (7d): ${pubWeek}`,
+          `RSS Articles Imported (7d): ${rssImportedWeek}`,
+          `Tracked Article Views (7d): ${viewsWeek}`,
+          `Confirmed Newsletter Subscribers: ${subsActive}`,
+          `Reader Comments Pending Moderation: ${commentsPending}`,
+        ].join('\n'),
+      );
     } else if (jobName === 'cleanup_weekly') {
       const res = cleanupOldRecords();
       summary = `Cleaned ${res.analyticsDeleted} analytics rows, ${res.cronDeleted} old logs, ${res.locksDeleted} stale locks.`;
@@ -254,6 +310,7 @@ export async function runManagedJob(
       WHERE id = ?
     `).run(errorMsg, durationMs, runId);
 
+    recordSystemError({ source: 'cron_job', route: jobName, error: err });
     void sendSystemAlertEmail(
       `Scheduled Job Failed: ${jobName}`,
       `Job: ${jobName}\nTrigger: ${triggerSource}\nError: ${errorMsg}\nTime: ${new Date().toISOString()}`,
@@ -342,7 +399,14 @@ async function schedulerTick() {
     });
   }
 
-  // 9. Weekly Sunday cleanup
+  // 9. Weekly Sunday analytics report (08:00 IST) & cleanup (03:00 IST)
+  if (ist.weekday === 'Sun' && ist.hour === 8) {
+    await runManagedJob('weekly_report', {
+      triggerSource: 'internal',
+      idempotencyKey: `weekly_report:${ist.dateStr}`,
+    });
+  }
+
   if (ist.weekday === 'Sun' && ist.hour === 3) {
     await runManagedJob('cleanup_weekly', {
       triggerSource: 'internal',

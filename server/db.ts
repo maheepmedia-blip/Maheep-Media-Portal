@@ -315,6 +315,59 @@ export function initDatabase(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics_events(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_analytics_article ON analytics_events(article_id);
+
+    CREATE TABLE IF NOT EXISTS authors (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      role_title TEXT NOT NULL DEFAULT 'Correspondent',
+      beat TEXT NOT NULL DEFAULT 'National Desk',
+      bio TEXT NOT NULL DEFAULT '',
+      email TEXT DEFAULT '',
+      twitter_handle TEXT DEFAULT '',
+      avatar_url TEXT DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS social_posts (
+      id TEXT PRIMARY KEY,
+      article_id TEXT DEFAULT '',
+      platform TEXT NOT NULL CHECK (platform IN ('x', 'whatsapp', 'facebook', 'linkedin', 'telegram')),
+      message TEXT NOT NULL,
+      share_url TEXT NOT NULL DEFAULT '',
+      scheduled_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ready', 'posted', 'cancelled')),
+      posted_at TEXT DEFAULT NULL,
+      created_by TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_social_posts_sched ON social_posts(status, scheduled_at);
+
+    CREATE TABLE IF NOT EXISTS newsletter_campaigns (
+      id TEXT PRIMARY KEY,
+      subject TEXT NOT NULL,
+      intro_text TEXT NOT NULL DEFAULT '',
+      language TEXT NOT NULL DEFAULT 'all' CHECK (language IN ('all', 'en', 'hi')),
+      article_ids_json TEXT NOT NULL DEFAULT '[]',
+      sent_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'sent',
+      sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS system_errors (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL DEFAULT 'api',
+      route TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL,
+      stack_summary TEXT DEFAULT '',
+      resolved INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_system_errors_created ON system_errors(resolved, created_at DESC);
   `);
 
   // Non-destructive column upgrades for existing production SQLite databases
@@ -1005,6 +1058,26 @@ function seedInitialData(): void {
       '',
       '',
     );
+  }
+
+  const authorCount = (db.prepare('SELECT COUNT(*) as count FROM authors').get() as { count: number }).count;
+  if (authorCount === 0) {
+    const insertAuthor = db.prepare(`
+      INSERT OR IGNORE INTO authors (id, name, slug, role_title, beat, bio, email, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+    `);
+    const baseAuthors = [
+      ['auth-desk', 'Maheep Editorial Desk', 'maheep-editorial-desk', 'Editorial Desk', 'National & Breaking News', 'Central bilingual editorial desk curating verified news from India and across the world.', 'maheepmedia@gmail.com'],
+      ['auth-raghavendra', 'Raghavendra Mishra', 'raghavendra-mishra', 'Senior Political Correspondent', 'National & Parliament', 'Covers Parliament, governance, public policy, and infrastructure projects across India.', ''],
+      ['auth-anjali', 'अंजलि शर्मा', 'anjali-sharma', 'वरिष्ठ संवाददाता', 'राष्ट्रीय एवं जनहित', 'राष्ट्रीय नीति, सामाजिक सरोकार और शिक्षा से जुड़ी रिपोर्टिंग।', ''],
+      ['auth-siddharth', 'Siddharth Kulkarni', 'siddharth-kulkarni', 'Business & Economy Editor', 'Business & Markets', 'Reports on RBI monetary policy, capital markets, startups, and fiscal developments.', ''],
+      ['auth-meenakshi', 'Meenakshi Rathore', 'meenakshi-rathore', 'Diplomacy & World Correspondent', 'International Affairs', 'Covers global diplomacy, trade corridors, and multilateral summits.', ''],
+      ['auth-arjun', 'Arjun Nair', 'arjun-nair', 'Sports Editor', 'Cricket & Athletics', 'Follows Indian cricket, hockey, badminton, and Olympic development programs.', ''],
+      ['auth-kavita', 'Dr. Kavita Subramanian', 'dr-kavita-subramanian', 'Science & Technology Editor', 'Science & Tech', 'Writes on ISRO space missions, semiconductors, digital public infrastructure, and AI.', ''],
+    ];
+    for (const [id, name, slug, roleTitle, beat, bio, email] of baseAuthors) {
+      insertAuthor.run(id, name, slug, roleTitle, beat, bio, email);
+    }
   }
 }
 

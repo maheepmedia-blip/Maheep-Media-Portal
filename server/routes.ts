@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Express, Request, Response } from 'express';
-import { listAdminAuditLogs, recordAdminAudit } from './audit.ts';
+import { listAdminAuditLogs, listSystemErrors, recordAdminAudit, resolveSystemError } from './audit.ts';
 import {
   type AuthenticatedRequest,
   hashPassword,
@@ -27,6 +27,7 @@ import {
   isSmtpConfigured,
   retryFailedEmails,
   sendAdminContactNotification,
+  sendCustomNewsletterCampaign,
   sendNewsletterConfirmationEmail,
 } from './email.ts';
 import { generateEditionForDate, renderEditionPrintableHtml } from './epaper.ts';
@@ -96,7 +97,11 @@ function getTodayIndiaDate(): string {
 }
 
 function resolvePublicBaseUrl(req: Request): string {
-  const configured = process.env.APP_URL?.trim();
+  const customDomain = getSetting('custom_domain', '').trim();
+  if (customDomain && /^https?:\/\//i.test(customDomain)) {
+    return customDomain.replace(/\/$/, '');
+  }
+  const configured = process.env.APP_URL?.trim() || process.env.RENDER_EXTERNAL_URL?.trim();
   if (configured && configured !== 'MY_APP_URL') {
     return configured.replace(/\/$/, '');
   }
@@ -402,6 +407,35 @@ export function registerApiRoutes(app: Express): void {
       .all(article.id);
 
     res.json({ article, related, comments });
+  });
+
+  app.get('/api/authors', (_req, res) => {
+    const authors = db
+      .prepare(`
+        SELECT au.*, COUNT(a.id) as article_count
+        FROM authors au
+        LEFT JOIN articles a ON a.author = au.name AND a.status = 'published'
+        WHERE au.active = 1
+        GROUP BY au.id
+        ORDER BY article_count DESC, au.name ASC
+      `)
+      .all();
+    res.json({ authors });
+  });
+
+  app.get('/api/authors/:slug', (req, res) => {
+    const slug = String(req.params.slug || '').trim();
+    const author = db.prepare('SELECT * FROM authors WHERE slug = ? AND active = 1').get(slug) as
+      | Record<string, unknown>
+      | undefined;
+    if (!author) {
+      res.status(404).json({ error: 'Journalist profile not found.' });
+      return;
+    }
+    const articles = db
+      .prepare(`${ARTICLE_SELECT} WHERE a.author = ? AND a.status = 'published' ORDER BY a.published_at DESC LIMIT 40`)
+      .all(String(author.name || ''));
+    res.json({ author, articles });
   });
 
   app.post('/api/articles/:slug/comments', (req, res) => {
@@ -766,6 +800,27 @@ export function registerApiRoutes(app: Express): void {
     res.json({ user });
   });
 
+  app.patch('/api/reader/profile', requireReader, (req: ReaderAuthenticatedRequest, res) => {
+    const name = String(req.body?.name || '').trim();
+    const lang = ['all', 'en', 'hi'].includes(req.body?.preferred_language) ? req.body.preferred_language : undefined;
+    const fontSize = ['sm', 'md', 'lg'].includes(req.body?.font_size) ? req.body.font_size : undefined;
+    const readerId = req.readerUser?.sub || '';
+
+    if (name && name.length >= 2) {
+      db.prepare('UPDATE reader_users SET name = ? WHERE id = ?').run(name.slice(0, 80), readerId);
+    }
+    if (lang) {
+      db.prepare('UPDATE reader_users SET preferred_language = ? WHERE id = ?').run(lang, readerId);
+    }
+    if (fontSize) {
+      db.prepare('UPDATE reader_users SET font_size = ? WHERE id = ?').run(fontSize, readerId);
+    }
+    const user = db
+      .prepare('SELECT id, name, email, preferred_language, font_size, created_at FROM reader_users WHERE id = ?')
+      .get(readerId);
+    res.json({ user });
+  });
+
   app.get('/api/reader/bookmarks', requireReader, (req: ReaderAuthenticatedRequest, res) => {
     const items = db
       .prepare(`
@@ -989,8 +1044,25 @@ export function registerApiRoutes(app: Express): void {
     const commentsPending = (db.prepare("SELECT COUNT(*) as total FROM comments WHERE status = 'pending'").get() as { total: number }).total;
     const subscribers = (db.prepare("SELECT COUNT(*) as total FROM newsletter_subscribers WHERE status = 'active'").get() as { total: number }).total;
     const pushSubscribers = (db.prepare('SELECT COUNT(*) as total FROM push_subscriptions').get() as { total: number }).total;
-    const rssSources = db.prepare('SELECT id, name, enabled, last_fetched_at, last_error, imported_count FROM rss_sources').all();
+    const rssSources = db.prepare('SELECT id, name, enabled, last_fetched_at, last_error, imported_count FROM rss_sources').all() as Array<{
+      id: string;
+      name: string;
+      enabled: number;
+      last_error: string;
+    }>;
     const recentLogs = db.prepare('SELECT * FROM rss_import_logs ORDER BY ran_at DESC LIMIT 12').all();
+    const failedFeeds = rssSources.filter((s) => s.enabled === 1 && Boolean(s.last_error)).length;
+    const unresolvedErrors = (
+      db.prepare('SELECT COUNT(*) as total FROM system_errors WHERE resolved = 0').get() as { total: number }
+    ).total;
+    const breakingCandidatesList = db
+      .prepare(`
+        SELECT id, title, slug, source_name, created_at
+        FROM articles
+        WHERE breaking_candidate = 1 AND breaking = 0 AND status != 'archived'
+        ORDER BY created_at DESC LIMIT 8
+      `)
+      .all();
 
     res.json({
       stats,
@@ -1002,6 +1074,14 @@ export function registerApiRoutes(app: Express): void {
       pushSubscribers,
       rssSources,
       recentLogs,
+      alerts: {
+        failedFeeds,
+        unresolvedErrors,
+        commentsPending,
+        contactsNew,
+        breakingCandidatesCount: breakingCandidatesList.length,
+        breakingCandidatesList,
+      },
       scheduling: {
         lastRunAt: getSetting('rss_last_run_at', ''),
         nextRunAt: getSetting('rss_next_run_at', ''),
@@ -1745,6 +1825,7 @@ export function registerApiRoutes(app: Express): void {
     const auditLogs = listAdminAuditLogs(60);
     const aiLogs = db.prepare('SELECT * FROM ai_usage_logs ORDER BY created_at DESC LIMIT 40').all();
     const emailLogs = db.prepare('SELECT * FROM email_logs ORDER BY created_at DESC LIMIT 40').all();
+    const systemErrors = listSystemErrors(40);
 
     res.json({
       storage,
@@ -1759,7 +1840,15 @@ export function registerApiRoutes(app: Express): void {
       auditLogs,
       aiLogs,
       emailLogs,
+      systemErrors,
     });
+  });
+
+  app.post('/api/admin/system/errors/:id/resolve', requireSuperAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '');
+    resolveSystemError(id);
+    recordAdminAudit({ req, action: 'system_error_resolve', targetType: 'system_error', targetId: id });
+    res.json({ ok: true });
   });
 
   app.post('/api/admin/cron/:jobName/run', requireSuperAdmin, async (req: AuthenticatedRequest, res) => {
@@ -1876,6 +1965,150 @@ export function registerApiRoutes(app: Express): void {
     res.json({ settings });
   });
 
+  // ---------------- JOURNALISTS, SOCIAL QUEUE & NEWSLETTER CAMPAIGNS ----------------
+
+  app.get('/api/admin/authors', requireAdmin, (_req, res) => {
+    const authors = db
+      .prepare(`
+        SELECT au.*, COUNT(a.id) as article_count
+        FROM authors au
+        LEFT JOIN articles a ON a.author = au.name
+        GROUP BY au.id
+        ORDER BY au.name ASC
+      `)
+      .all();
+    res.json({ authors });
+  });
+
+  app.post('/api/admin/authors', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const name = String(req.body?.name || '').trim();
+    const roleTitle = String(req.body?.role_title || 'Correspondent').trim();
+    const beat = String(req.body?.beat || 'National Desk').trim();
+    const bio = String(req.body?.bio || '').trim();
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const twitter = String(req.body?.twitter_handle || '').trim();
+    if (!name || name.length < 2) {
+      res.status(400).json({ error: 'Journalist name is required.' });
+      return;
+    }
+    const slug = `${createSlug(name)}-${crypto.randomUUID().slice(0, 4)}`;
+    const id = `auth-${crypto.randomUUID().slice(0, 8)}`;
+    db.prepare(`
+      INSERT INTO authors (id, name, slug, role_title, beat, bio, email, twitter_handle, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `).run(id, name, slug, roleTitle, beat, bio, email, twitter);
+    recordAdminAudit({ req, action: 'author_create', targetType: 'author', targetId: id, details: { name, roleTitle } });
+    res.status(201).json({ author: db.prepare('SELECT * FROM authors WHERE id = ?').get(id) });
+  });
+
+  app.patch('/api/admin/authors/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '');
+    const existing = db.prepare('SELECT * FROM authors WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Journalist not found.' });
+      return;
+    }
+    db.prepare(`
+      UPDATE authors
+      SET name = ?, role_title = ?, beat = ?, bio = ?, email = ?, twitter_handle = ?, active = ?
+      WHERE id = ?
+    `).run(
+      req.body?.name !== undefined ? String(req.body.name).trim() : existing.name,
+      req.body?.role_title !== undefined ? String(req.body.role_title).trim() : existing.role_title,
+      req.body?.beat !== undefined ? String(req.body.beat).trim() : existing.beat,
+      req.body?.bio !== undefined ? String(req.body.bio).trim() : existing.bio,
+      req.body?.email !== undefined ? String(req.body.email).trim().toLowerCase() : existing.email,
+      req.body?.twitter_handle !== undefined ? String(req.body.twitter_handle).trim() : existing.twitter_handle,
+      req.body?.active !== undefined ? (req.body.active ? 1 : 0) : existing.active,
+      id,
+    );
+    recordAdminAudit({ req, action: 'author_update', targetType: 'author', targetId: id });
+    res.json({ author: db.prepare('SELECT * FROM authors WHERE id = ?').get(id) });
+  });
+
+  app.delete('/api/admin/authors/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '');
+    db.prepare('DELETE FROM authors WHERE id = ?').run(id);
+    recordAdminAudit({ req, action: 'author_delete', targetType: 'author', targetId: id });
+    res.json({ ok: true });
+  });
+
+  app.get('/api/admin/social-posts', requireAdmin, (_req, res) => {
+    const posts = db
+      .prepare(`
+        SELECT sp.*, a.title as article_title, a.slug as article_slug
+        FROM social_posts sp
+        LEFT JOIN articles a ON a.id = sp.article_id
+        ORDER BY sp.scheduled_at ASC
+        LIMIT 120
+      `)
+      .all();
+    res.json({ posts });
+  });
+
+  app.post('/api/admin/social-posts', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const platform = ['x', 'whatsapp', 'facebook', 'linkedin', 'telegram'].includes(req.body?.platform)
+      ? req.body.platform
+      : 'x';
+    const message = String(req.body?.message || '').trim();
+    const articleId = String(req.body?.article_id || '').trim();
+    const shareUrl = sanitizeAdTargetUrl(req.body?.share_url || '');
+    const scheduledAt = String(req.body?.scheduled_at || '').trim() || new Date().toISOString();
+    if (!message || message.length < 4) {
+      res.status(400).json({ error: 'Social post caption/message is required.' });
+      return;
+    }
+    const id = `soc-${crypto.randomUUID().slice(0, 8)}`;
+    db.prepare(`
+      INSERT INTO social_posts (id, article_id, platform, message, share_url, scheduled_at, status, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)
+    `).run(id, articleId, platform, message.slice(0, 1000), shareUrl, scheduledAt, req.adminUser?.email || '');
+    recordAdminAudit({ req, action: 'social_schedule', targetType: 'social_post', targetId: id, details: { platform, scheduledAt } });
+    res.status(201).json({ post: db.prepare('SELECT * FROM social_posts WHERE id = ?').get(id) });
+  });
+
+  app.patch('/api/admin/social-posts/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '');
+    const status = ['scheduled', 'ready', 'posted', 'cancelled'].includes(req.body?.status) ? req.body.status : 'posted';
+    const postedAt = status === 'posted' ? new Date().toISOString() : null;
+    db.prepare('UPDATE social_posts SET status = ?, posted_at = COALESCE(?, posted_at) WHERE id = ?').run(status, postedAt, id);
+    recordAdminAudit({ req, action: 'social_update', targetType: 'social_post', targetId: id, details: { status } });
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/admin/social-posts/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '');
+    db.prepare('DELETE FROM social_posts WHERE id = ?').run(id);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/admin/newsletter/campaigns', requireAdmin, (_req, res) => {
+    const campaigns = db.prepare('SELECT * FROM newsletter_campaigns ORDER BY created_at DESC LIMIT 40').all();
+    res.json({ campaigns });
+  });
+
+  app.post('/api/admin/newsletter/campaigns', requireAdmin, async (req: AuthenticatedRequest, res) => {
+    const subject = String(req.body?.subject || '').trim();
+    const introText = String(req.body?.intro_text || '').trim();
+    const language = req.body?.language === 'en' || req.body?.language === 'hi' ? req.body.language : 'all';
+    const articleIds = Array.isArray(req.body?.article_ids) ? req.body.article_ids.map(String) : [];
+
+    if (!subject || subject.length < 3) {
+      res.status(400).json({ error: 'Campaign subject is required.' });
+      return;
+    }
+
+    const result = await sendCustomNewsletterCampaign({ subject, introText, language, articleIds });
+    const id = `cmp-${crypto.randomUUID().slice(0, 8)}`;
+    db.prepare(`
+      INSERT INTO newsletter_campaigns (id, subject, intro_text, language, article_ids_json, sent_count, failed_count, status, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?)
+    `).run(id, subject, introText, language, JSON.stringify(articleIds), result.sent, result.failed, req.adminUser?.email || '');
+
+    recordAdminAudit({ req, action: 'newsletter_campaign_send', targetType: 'newsletter_campaign', targetId: id, details: result });
+    res.status(201).json({ ok: true, id, ...result });
+  });
+
   app.put('/api/admin/settings', requireSuperAdmin, (req: AuthenticatedRequest, res) => {
     const allowedKeys = [
       'publishing_mode',
@@ -1887,6 +2120,9 @@ export function registerApiRoutes(app: Express): void {
       'tagline_hi',
       'tagline_en',
       'admin_email',
+      'custom_domain',
+      'branded_sender_name',
+      'branded_sender_email',
     ];
     for (const k of allowedKeys) {
       if (req.body?.[k] !== undefined) {

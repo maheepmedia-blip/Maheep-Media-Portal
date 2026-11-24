@@ -44,6 +44,11 @@ export function ReaderDrawer() {
   const [history, setHistory] = useState<Array<Article & { read_at?: string }>>([]);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
+  const [profileName, setProfileName] = useState(readerUser?.name || '');
+
+  useEffect(() => {
+    if (readerUser?.name) setProfileName(readerUser.name);
+  }, [readerUser?.name]);
 
   const loadReaderData = useCallback(async () => {
     if (!readerToken) return;
@@ -134,6 +139,24 @@ export function ReaderDrawer() {
       const json = await res.json();
       setReaderSession(readerToken, json.user);
       setNotice('Reader preferences saved.');
+    }
+  };
+
+  const saveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!readerToken || profileName.trim().length < 2) return;
+    const res = await fetch('/api/reader/profile', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${readerToken}`,
+      },
+      body: JSON.stringify({ name: profileName.trim(), preferred_language: language, font_size: fontSize }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      setReaderSession(readerToken, json.user);
+      setNotice('Profile updated.');
     }
   };
 
@@ -370,7 +393,7 @@ export function ReaderDrawer() {
                     tab === 'prefs' ? 'border-[#00652E] text-[#00652E]' : 'border-transparent text-neutral-500'
                   }`}
                 >
-                  Language
+                  Profile
                 </button>
               </div>
 
@@ -431,7 +454,23 @@ export function ReaderDrawer() {
               )}
 
               {tab === 'prefs' && (
-                <div className="space-y-3 text-xs">
+                <div className="space-y-4 text-xs">
+                  <form onSubmit={saveProfile} className="p-3 rounded border border-neutral-200 dark:border-neutral-800 space-y-2">
+                    <label className="block font-semibold">Reader Display Name</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        required
+                        minLength={2}
+                        value={profileName}
+                        onChange={(e) => setProfileName(e.target.value)}
+                        className="flex-1 px-2.5 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                      />
+                      <button type="submit" className="px-3 py-1.5 rounded bg-[#00652E] text-white font-semibold">
+                        Save
+                      </button>
+                    </div>
+                  </form>
                   <p className="text-neutral-500">Choose your default edition language:</p>
                   <div className="grid grid-cols-3 gap-2">
                     {(['all', 'en', 'hi'] as const).map((l) => (

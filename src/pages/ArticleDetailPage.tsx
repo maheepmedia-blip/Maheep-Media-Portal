@@ -268,7 +268,12 @@ export function ArticleDetailPage() {
 
               <div className="flex flex-wrap items-center justify-between gap-4 pt-2 text-xs text-neutral-600 dark:text-neutral-400">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="font-semibold text-neutral-900 dark:text-neutral-200">By {article.author}</span>
+                  <Link
+                    to="/authors"
+                    className="font-semibold text-neutral-900 dark:text-neutral-200 hover:text-[#00652E] hover:underline"
+                  >
+                    By {article.author}
+                  </Link>
                   <span aria-hidden="true">·</span>
                   <span>{article.source_name}</span>
                   <span aria-hidden="true">·</span>
@@ -276,7 +281,7 @@ export function ArticleDetailPage() {
                 </div>
 
                 {/* Social Share Actions */}
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="inline-flex items-center gap-1 text-neutral-500">
                     <Share2 className="w-3.5 h-3.5" /> Share:
                   </span>
@@ -303,6 +308,22 @@ export function ArticleDetailPage() {
                     className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]"
                   >
                     X
+                  </a>
+                  <a
+                    href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]"
+                  >
+                    Facebook
+                  </a>
+                  <a
+                    href={`https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(article.title)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]"
+                  >
+                    Telegram
                   </a>
                 </div>
               </div>

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { recordSystemError } from './server/audit.ts';
 import { initDatabase } from './server/db.ts';
 import { startUnifiedScheduler } from './server/jobs.ts';
 import { registerApiRoutes } from './server/routes.ts';
@@ -27,8 +28,9 @@ async function startServer() {
   registerApiRoutes(app);
 
   // Ensure API errors always return structured JSON rather than HTML
-  app.use('/api', (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  app.use('/api', (err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('API Error:', err);
+    recordSystemError({ source: 'express', route: `${req.method} ${req.originalUrl}`, error: err });
     const message = err instanceof Error ? err.message : 'Internal server error';
     res.status(500).json({ error: message });
   });
@@ -60,7 +62,13 @@ async function startServer() {
   });
 }
 
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+  recordSystemError({ source: 'process', route: 'unhandledRejection', error: reason });
+});
+
 startServer().catch((err) => {
   console.error('Failed to start Maheep News Portal server:', err);
+  recordSystemError({ source: 'startup', route: 'startServer', error: err });
   process.exit(1);
 });

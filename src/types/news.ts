@@ -244,3 +244,57 @@ export interface EmailLog {
   created_at: string;
   sent_at: string;
 }
+
+export interface AuthorProfile {
+  id: string;
+  name: string;
+  slug: string;
+  role_title: string;
+  beat: string;
+  bio: string;
+  email: string;
+  twitter_handle: string;
+  avatar_url: string;
+  active: number | boolean;
+  article_count?: number;
+  created_at: string;
+}
+
+export interface SocialPostItem {
+  id: string;
+  article_id: string;
+  article_title?: string;
+  article_slug?: string;
+  platform: 'x' | 'whatsapp' | 'facebook' | 'linkedin' | 'telegram';
+  message: string;
+  share_url: string;
+  scheduled_at: string;
+  status: 'scheduled' | 'ready' | 'posted' | 'cancelled';
+  posted_at: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface NewsletterCampaign {
+  id: string;
+  subject: string;
+  intro_text: string;
+  language: 'all' | 'en' | 'hi';
+  article_ids_json: string;
+  sent_count: number;
+  failed_count: number;
+  status: string;
+  sent_at: string;
+  created_by: string;
+}
+
+export interface SystemErrorLog {
+  id: string;
+  source: string;
+  route: string;
+  message: string;
+  stack_summary: string;
+  resolved: number | boolean;
+  created_at: string;
+}
+

@@ -1,6 +1,6 @@
 import { Database, Download, HardDrive, Play, RefreshCw, RotateCcw, ShieldCheck } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import type { AdminAuditLog, AiUsageLog, BackupEntry, CronJobRun, EmailLog } from '../../types/news.ts';
+import type { AdminAuditLog, AiUsageLog, BackupEntry, CronJobRun, EmailLog, SystemErrorLog } from '../../types/news.ts';
 import { formatIndiaDateTime } from '../../utils/date.ts';
 
 interface SystemPayload {
@@ -23,6 +23,7 @@ interface SystemPayload {
   auditLogs: AdminAuditLog[];
   aiLogs: AiUsageLog[];
   emailLogs: EmailLog[];
+  systemErrors?: SystemErrorLog[];
 }
 
 export function AdminSystemPanel({ token }: { token: string }) {
@@ -318,6 +319,44 @@ export function AdminSystemPanel({ token }: { token: string }) {
       </div>
 
       <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-3">
+        <h3 className="text-sm font-bold">
+          Runtime Error Monitor ({(sys.systemErrors || []).filter((e) => !e.resolved).length} open / {(sys.systemErrors || []).length} total)
+        </h3>
+        {(sys.systemErrors || []).length === 0 ? (
+          <p className="text-xs text-neutral-500">No runtime errors recorded.</p>
+        ) : (
+          <div className="divide-y divide-neutral-100 dark:divide-neutral-800 text-xs max-h-56 overflow-y-auto">
+            {(sys.systemErrors || []).map((err) => (
+              <div key={err.id} className="py-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <span className={`font-semibold ${err.resolved ? 'text-neutral-400' : 'text-[#DF2525]'}`}>
+                    [{err.source}] {err.route}
+                  </span>{' '}
+                  <span className={err.resolved ? 'line-through text-neutral-400' : ''}>{err.message}</span>
+                  <div className="text-[11px] text-neutral-500 font-mono-tabular">{formatIndiaDateTime(err.created_at)}</div>
+                </div>
+                {!err.resolved && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await fetch(`/api/admin/system/errors/${err.id}/resolve`, {
+                        method: 'POST',
+                        headers: { Authorization: `Bearer ${token}` },
+                      });
+                      loadSystem();
+                    }}
+                    className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 font-semibold hover:border-[#00652E]"
+                  >
+                    Mark Resolved
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-3">
         <h3 className="text-sm font-bold">Administrator Audit Trail ({sys.auditLogs.length})</h3>
         <div className="divide-y divide-neutral-100 dark:divide-neutral-800 text-xs max-h-64 overflow-y-auto">
           {sys.auditLogs.map((log) => (
@@ -335,3 +374,4 @@ export function AdminSystemPanel({ token }: { token: string }) {
     </div>
   );
 }
+

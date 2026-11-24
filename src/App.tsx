@@ -15,6 +15,7 @@ const ArticleDetailPage = lazy(() =>
   import('./pages/ArticleDetailPage.tsx').then((m) => ({ default: m.ArticleDetailPage })),
 );
 const SearchPage = lazy(() => import('./pages/SearchPage.tsx').then((m) => ({ default: m.SearchPage })));
+const AuthorPage = lazy(() => import('./pages/AuthorPage.tsx').then((m) => ({ default: m.AuthorPage })));
 const AdminPage = lazy(() => import('./pages/AdminPage.tsx').then((m) => ({ default: m.AdminPage })));
 
 class PortalErrorBoundary extends React.Component<
@@ -80,6 +81,8 @@ export default function App() {
               <Route path="/contact" element={<ContactPage />} />
               <Route path="/contact.html" element={<Navigate to="/contact" replace />} />
               <Route path="/news/:slug" element={<ArticleDetailPage />} />
+              <Route path="/authors" element={<AuthorPage />} />
+              <Route path="/author/:slug" element={<AuthorPage />} />
               <Route path="/search" element={<SearchPage />} />
               <Route path="/admin" element={<AdminPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
