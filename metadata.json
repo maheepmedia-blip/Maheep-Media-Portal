@@ -1,0 +1,8 @@
+{
+  "name": "Maheep News Portal",
+  "description": "Sach Ke Saath, Janata Ke Vishwas Ke Saath — Complete bilingual Hindi and English digital newspaper platform covering all 28 Indian states, 8 Union Territories, National, International, Business, Sports, Technology, Education, and daily E-Paper editions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

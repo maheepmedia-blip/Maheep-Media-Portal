@@ -1,0 +1,82 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --brand-primary: #00652E;
+    --brand-dark: #00451F;
+    --brand-bright: #159B42;
+    --brand-tint: #EAF5E5;
+    --brand-breaking: #DF2525;
+  }
+
+  html {
+    font-family: 'Plus Jakarta Sans', 'Noto Sans Devanagari', system-ui, -apple-system, sans-serif;
+    scroll-behavior: smooth;
+  }
+
+  .font-editorial {
+    font-family: 'Playfair Display', 'Noto Sans Devanagari', Georgia, serif;
+  }
+
+  .font-mono-tabular {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+}
+
+/* Ticker animation with prefers-reduced-motion compliance */
+@keyframes maheep-ticker {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.ticker-track {
+  display: flex;
+  width: max-content;
+  animation: maheep-ticker 48s linear infinite;
+}
+
+.ticker-track:hover {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track {
+    animation: none;
+  }
+}
+
+/* Print stylesheet for A4 E-Paper printing */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+  body {
+    background: #ffffff !important;
+    color: #111827 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .epaper-print-page {
+    break-after: page;
+    page-break-after: always;
+    box-shadow: none !important;
+    border: 1px solid #d4d4d4 !important;
+    margin: 0 0 8mm 0 !important;
+  }
+  .epaper-print-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}
