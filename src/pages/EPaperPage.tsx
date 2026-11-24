@@ -1,6 +1,7 @@
 import { Calendar, ChevronLeft, ChevronRight, Download, ExternalLink, Printer } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { AdSlot } from '../components/AdSlot.tsx';
 import { ArticleImage } from '../components/ArticleImage.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
@@ -8,6 +9,7 @@ import type { Edition, EditionPage } from '../types/news.ts';
 import { downloadEditionPdf } from '../utils/pdf.ts';
 
 export function EPaperPage() {
+  const [, setSearchParams] = useSearchParams();
   const [editions, setEditions] = useState<Edition[]>([]);
   const [selectedEdition, setSelectedEdition] = useState<Edition | null>(null);
   const [currentPageIdx, setCurrentPageIdx] = useState(0);
@@ -17,13 +19,15 @@ export function EPaperPage() {
   useEffect(() => {
     setLoading(true);
     const qs = monthFilter ? `?month=${encodeURIComponent(monthFilter)}` : '';
-    fetch(`/api/editions${qs}`)
+    fetch(`/api/editions${qs}`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((json) => {
         const list = (json.editions || []) as Edition[];
         setEditions(list);
         if (list.length > 0) {
-          setSelectedEdition(list[0]);
+          const initialDate = new URLSearchParams(window.location.search).get('date') || '';
+          const matched = initialDate ? list.find((e) => e.edition_date === initialDate) : undefined;
+          setSelectedEdition(matched || list[0]);
           setCurrentPageIdx(0);
         } else {
           setSelectedEdition(null);
@@ -50,6 +54,7 @@ export function EPaperPage() {
     if (found) {
       setSelectedEdition(found);
       setCurrentPageIdx(0);
+      setSearchParams({ date: found.edition_date }, { replace: true });
     }
   };
 
@@ -95,7 +100,7 @@ export function EPaperPage() {
               >
                 {editions.map((ed) => (
                   <option key={ed.id} value={ed.edition_date}>
-                    {ed.edition_date} — {ed.page_count} Pages
+                    {ed.edition_date} — {ed.page_count} Pages ({ed.article_count} Stories)
                   </option>
                 ))}
               </select>
@@ -132,6 +137,8 @@ export function EPaperPage() {
             )}
           </div>
         </div>
+
+        <AdSlot placement="epaper_banner" />
 
         {loading ? (
           <div className="py-12 text-sm text-neutral-500">Loading digital editions...</div>
@@ -184,10 +191,7 @@ export function EPaperPage() {
                     <button
                       key={ed.id}
                       type="button"
-                      onClick={() => {
-                        setSelectedEdition(ed);
-                        setCurrentPageIdx(0);
-                      }}
+                      onClick={() => handleDateChange(ed.edition_date)}
                       className={`w-full text-left p-2.5 rounded border text-xs transition-colors ${
                         ed.id === selectedEdition.id
                           ? 'border-[#00652E] bg-[#EAF5E5]/60 dark:bg-[#00451F]/30'
@@ -231,7 +235,10 @@ export function EPaperPage() {
               </div>
 
               {/* Broadsheet Sheet */}
-              <div className="epaper-print-page bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg p-6 sm:p-10 shadow-sm">
+              <div
+                key={`${selectedEdition.id}-p${activePage.pageNumber}`}
+                className="epaper-print-page bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg p-6 sm:p-10 shadow-sm"
+              >
                 <div className="border-b-2 border-[#00652E] pb-4 mb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-2">
                   <div>
                     <div className="font-editorial text-2xl sm:text-3xl font-extrabold text-[#00652E] dark:text-[#4ade80]">

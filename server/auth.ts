@@ -2,14 +2,20 @@ import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { db } from './db.ts';
 
+const ENV_SESSION_SECRET = process.env.SESSION_SECRET?.trim() || '';
 // Ephemeral fallback secret if SESSION_SECRET is not provided in env
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const SESSION_SECRET = ENV_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+
+export function isSessionSecretEphemeral(): boolean {
+  return ENV_SESSION_SECRET.length === 0;
+}
 
 export interface AdminTokenPayload {
   sub: string;
   email: string;
   name: string;
   role: 'super_admin' | 'admin' | 'editor';
+  kind?: 'admin';
   exp: number;
 }
 
@@ -31,9 +37,10 @@ export function verifyPassword(password: string, expectedHash: string, salt: str
   return crypto.timingSafeEqual(derived, expectedBuf);
 }
 
-export function signToken(payload: Omit<AdminTokenPayload, 'exp'>): string {
+export function signToken(payload: Omit<AdminTokenPayload, 'exp' | 'kind'>): string {
   const fullPayload: AdminTokenPayload = {
     ...payload,
+    kind: 'admin',
     exp: Date.now() + 1000 * 60 * 60 * 12, // 12 hours
   };
   const encoded = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
@@ -51,6 +58,7 @@ export function verifyToken(token: string): AdminTokenPayload | null {
     const b = Buffer.from(expectedSig);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
     const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as AdminTokenPayload;
+    if (payload.kind && payload.kind !== 'admin') return null;
     if (!payload.exp || Date.now() > payload.exp) return null;
     return payload;
   } catch {
@@ -92,4 +100,17 @@ export function requireSuperAdmin(req: AuthenticatedRequest, res: Response, next
     }
     next();
   });
+}
+
+export function verifyCronSecret(req: Request): boolean {
+  const expected = process.env.CRON_SECRET?.trim();
+  if (!expected) return false;
+  const headerSecret = String(req.headers['x-cron-secret'] || '').trim();
+  const authHeader = String(req.headers.authorization || '');
+  const bearerSecret = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const candidate = headerSecret || bearerSecret;
+  if (!candidate) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }

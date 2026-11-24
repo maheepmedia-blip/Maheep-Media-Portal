@@ -18,10 +18,17 @@ export function generateEditionForDate(editionDate: string) {
       LEFT JOIN categories c ON c.id = a.category_id
       LEFT JOIN states s ON s.id = a.state_id
       WHERE a.status = 'published'
-      ORDER BY a.featured DESC, a.breaking DESC, a.published_at DESC
+        AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+      ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC, a.featured DESC, a.breaking DESC
       LIMIT 30
     `)
-    .all() as Array<Record<string, unknown>>;
+    .all(editionDate) as Array<Record<string, unknown>>;
+
+  if (published.length === 0) {
+    throw new Error(
+      `No published articles found for ${editionDate} (IST). Publish or import articles dated ${editionDate} before generating this edition.`,
+    );
+  }
 
   const id = `ed-${editionDate}`;
   const pages = buildEditionPagesPayload(editionDate, published);

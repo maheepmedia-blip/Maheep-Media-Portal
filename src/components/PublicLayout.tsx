@@ -1,9 +1,11 @@
-import { BookOpen, Menu, Moon, Search, Sun, X } from 'lucide-react';
+import { BookOpen, Menu, Moon, Search, Sun, User, X } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { usePortal } from '../context/PortalContext.tsx';
 import type { Article } from '../types/news.ts';
 import { getIndiaClockParts } from '../utils/date.ts';
+import { ReaderDrawer } from './ReaderDrawer.tsx';
+import { WeatherWidget } from './WeatherWidget.tsx';
 
 interface PublicLayoutProps {
   children: React.ReactNode;
@@ -11,12 +13,13 @@ interface PublicLayoutProps {
 }
 
 export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps) {
-  const { language, setLanguage, darkMode, toggleDarkMode } = usePortal();
+  const { language, setLanguage, darkMode, toggleDarkMode, readerUser, setReaderDrawerOpen } = usePortal();
   const [clock, setClock] = useState(() => getIndiaClockParts());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [newsletterEmail, setNewsletterEmail] = useState('');
   const [newsletterMsg, setNewsletterMsg] = useState('');
+  const [newsletterConfirmUrl, setNewsletterConfirmUrl] = useState('');
   const [newsletterErr, setNewsletterErr] = useState('');
   const navigate = useNavigate();
 
@@ -40,12 +43,13 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
   const handleNewsletter = async (e: React.FormEvent) => {
     e.preventDefault();
     setNewsletterMsg('');
+    setNewsletterConfirmUrl('');
     setNewsletterErr('');
     try {
       const res = await fetch('/api/newsletter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: newsletterEmail }),
+        body: JSON.stringify({ email: newsletterEmail, language_pref: language }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -53,6 +57,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
         return;
       }
       setNewsletterMsg(data.message || 'Subscribed to Maheep Daily Briefing.');
+      if (data.confirmUrl) setNewsletterConfirmUrl(data.confirmUrl);
       setNewsletterEmail('');
     } catch {
       setNewsletterErr('Network error. Please try again.');
@@ -151,10 +156,11 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
           {/* Date, Live IST Clock, Language Switch & Theme Toggle */}
           <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#00652E]/15 dark:border-neutral-800 text-xs text-neutral-700 dark:text-neutral-300">
-            <div className="flex items-center gap-3 font-mono-tabular">
+            <div className="flex flex-wrap items-center gap-3 font-mono-tabular">
               <span>{clock.dateLabel}</span>
               <span aria-hidden="true" className="text-neutral-400">·</span>
               <span className="font-semibold text-[#00652E] dark:text-[#4ade80]">{clock.timeLabel}</span>
+              <WeatherWidget />
             </div>
 
             <div className="flex items-center gap-3 flex-wrap">
@@ -196,6 +202,15 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
               >
                 {darkMode ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-[#00652E]" />}
                 <span>{darkMode ? 'Light' : 'Dark'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setReaderDrawerOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-medium hover:border-[#00652E] transition-colors"
+              >
+                <User className="w-3.5 h-3.5 text-[#00652E]" />
+                <span>{readerUser ? readerUser.name.split(' ')[0] : 'Reader Desk'}</span>
               </button>
 
               <Link
@@ -306,6 +321,16 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
                 Subscribe Free
               </button>
               {newsletterMsg && <p className="text-xs text-[#EAF5E5]">{newsletterMsg}</p>}
+              {newsletterConfirmUrl && (
+                <a
+                  href={newsletterConfirmUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-block text-xs underline text-amber-200 font-semibold"
+                >
+                  Click to Confirm Subscription →
+                </a>
+              )}
               {newsletterErr && <p className="text-xs text-red-200">{newsletterErr}</p>}
             </form>
           </div>
@@ -318,6 +343,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
           </div>
         </div>
       </footer>
+      <ReaderDrawer />
     </div>
   );
 }

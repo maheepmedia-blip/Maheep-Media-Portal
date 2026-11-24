@@ -3,22 +3,37 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const DATA_DIR = path.resolve(
+  process.env.DATA_DIR?.trim() || process.env.RENDER_DISK_PATH?.trim() || path.join(process.cwd(), 'data'),
+);
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
+const RESOLVED_DB_PATH = process.env.DB_PATH?.trim()
+  ? path.resolve(process.env.DB_PATH.trim())
+  : path.join(DATA_DIR, 'maheep.db');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+for (const dir of [DATA_DIR, UPLOADS_DIR, BACKUPS_DIR, path.dirname(RESOLVED_DB_PATH)]) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 }
 
-export const dbPath = path.join(DATA_DIR, 'maheep.db');
+export const dataDir = DATA_DIR;
+export const dbPath = RESOLVED_DB_PATH;
 export const uploadsDir = UPLOADS_DIR;
+export const backupsDir = BACKUPS_DIR;
 
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 5000');
+
+function ensureColumn(table: string, column: string, definition: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
 
 export function initDatabase(): void {
   db.exec(`
@@ -142,20 +157,194 @@ export function initDatabase(): void {
       setting_value TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS ads (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      advertiser TEXT NOT NULL DEFAULT '',
+      placement TEXT NOT NULL CHECK (placement IN ('header_banner', 'homepage_mid', 'sidebar', 'article_inline', 'epaper_banner')),
+      image_url TEXT DEFAULT '',
+      target_url TEXT DEFAULT '',
+      description TEXT DEFAULT '',
+      cta_text TEXT NOT NULL DEFAULT 'Learn More',
+      language TEXT NOT NULL DEFAULT 'all' CHECK (language IN ('all', 'en', 'hi')),
+      active INTEGER NOT NULL DEFAULT 1,
+      start_date TEXT DEFAULT '',
+      end_date TEXT DEFAULT '',
+      impressions INTEGER NOT NULL DEFAULT 0,
+      clicks INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ads_placement_active ON ads(placement, active);
+
+    CREATE TABLE IF NOT EXISTS admin_audit_logs (
+      id TEXT PRIMARY KEY,
+      actor_id TEXT DEFAULT '',
+      actor_email TEXT DEFAULT '',
+      actor_role TEXT DEFAULT '',
+      action TEXT NOT NULL,
+      target_type TEXT DEFAULT '',
+      target_id TEXT DEFAULT '',
+      details_json TEXT DEFAULT '{}',
+      ip TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit_logs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cron_job_runs (
+      id TEXT PRIMARY KEY,
+      job_name TEXT NOT NULL,
+      idempotency_key TEXT DEFAULT '',
+      status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed', 'skipped')),
+      trigger_source TEXT NOT NULL DEFAULT 'internal',
+      summary TEXT DEFAULT '',
+      error_message TEXT DEFAULT '',
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      finished_at TEXT DEFAULT '',
+      duration_ms INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_job_runs(job_name, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS job_locks (
+      job_name TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      locked_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS article_revisions (
+      id TEXT PRIMARY KEY,
+      article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+      editor_email TEXT NOT NULL DEFAULT 'editorial@maheepnews.in',
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      change_note TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_revisions_article ON article_revisions(article_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ai_usage_logs (
+      id TEXT PRIMARY KEY,
+      action TEXT NOT NULL,
+      article_id TEXT DEFAULT '',
+      actor_email TEXT DEFAULT 'system',
+      model TEXT NOT NULL DEFAULT 'gemini-4-hydrogen',
+      status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+      latency_ms INTEGER NOT NULL DEFAULT 0,
+      input_chars INTEGER NOT NULL DEFAULT 0,
+      output_chars INTEGER NOT NULL DEFAULT 0,
+      result_summary TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_logs_created ON ai_usage_logs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS email_logs (
+      id TEXT PRIMARY KEY,
+      recipient TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      template_type TEXT NOT NULL DEFAULT 'general',
+      status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+      error_message TEXT DEFAULT '',
+      retries INTEGER NOT NULL DEFAULT 0,
+      payload_json TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      sent_at TEXT DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_logs_status ON email_logs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS reader_users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      preferred_language TEXT NOT NULL DEFAULT 'all' CHECK (preferred_language IN ('all', 'en', 'hi')),
+      font_size TEXT NOT NULL DEFAULT 'md' CHECK (font_size IN ('sm', 'md', 'lg')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS reader_bookmarks (
+      id TEXT PRIMARY KEY,
+      reader_id TEXT NOT NULL REFERENCES reader_users(id) ON DELETE CASCADE,
+      article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(reader_id, article_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS reader_history (
+      id TEXT PRIMARY KEY,
+      reader_id TEXT NOT NULL REFERENCES reader_users(id) ON DELETE CASCADE,
+      article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+      read_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(reader_id, article_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS comments (
+      id TEXT PRIMARY KEY,
+      article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+      reader_id TEXT DEFAULT '',
+      author_name TEXT NOT NULL,
+      author_email TEXT DEFAULT '',
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_comments_article_status ON comments(article_id, status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id TEXT PRIMARY KEY,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      language TEXT NOT NULL DEFAULT 'all',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL DEFAULT 'page_view',
+      path TEXT NOT NULL DEFAULT '/',
+      article_id TEXT DEFAULT '',
+      category_slug TEXT DEFAULT '',
+      language TEXT DEFAULT 'all',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics_events(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_analytics_article ON analytics_events(article_id);
   `);
+
+  // Non-destructive column upgrades for existing production SQLite databases
+  ensureColumn('articles', 'scheduled_at', 'TEXT DEFAULT NULL');
+  ensureColumn('articles', 'unpublish_at', 'TEXT DEFAULT NULL');
+  ensureColumn('articles', 'reviewed_by', "TEXT DEFAULT ''");
+  ensureColumn('articles', 'reviewed_at', 'TEXT DEFAULT NULL');
+  ensureColumn('articles', 'ai_audit_json', "TEXT DEFAULT '{}'");
+  ensureColumn('articles', 'breaking_candidate', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('articles', 'preview_token', "TEXT DEFAULT ''");
+
+  ensureColumn('newsletter_subscribers', 'confirmed', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('newsletter_subscribers', 'confirm_token', "TEXT DEFAULT ''");
+  ensureColumn('newsletter_subscribers', 'unsubscribe_token', "TEXT DEFAULT ''");
+  ensureColumn('newsletter_subscribers', 'language_pref', "TEXT NOT NULL DEFAULT 'all'");
+  ensureColumn('newsletter_subscribers', 'digest_frequency', "TEXT NOT NULL DEFAULT 'daily'");
+
+  db.exec('CREATE INDEX IF NOT EXISTS idx_articles_scheduled ON articles(scheduled_at, unpublish_at)');
 
   seedInitialData();
 }
 
 function getIndiaDateOffset(daysAgo = 0): string {
-  const now = new Date();
-  now.setDate(now.getDate() - daysAgo);
+  const target = new Date(Date.now() - daysAgo * 86_400_000);
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(now);
+  }).format(target);
 }
 
 function seedInitialData(): void {
@@ -230,6 +419,10 @@ function seedInitialData(): void {
     );
     insertRss.run('rss-gnews-en', 'Google News India (English)', 'https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-national', 1);
     insertRss.run('rss-gnews-hi', 'Google News India (Hindi)', 'https://news.google.com/rss?hl=hi&gl=IN&ceid=IN:hi', 'hi', 'cat-national', 1);
+    insertRss.run('rss-gnews-biz', 'Google News India — Business', 'https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-business', 1);
+    insertRss.run('rss-gnews-sports', 'Google News India — Sports', 'https://news.google.com/rss/headlines/section/topic/SPORTS?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-sports', 1);
+    insertRss.run('rss-gnews-tech', 'Google News India — Technology', 'https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-technology', 1);
+    insertRss.run('rss-gnews-sci', 'Google News India — Science', 'https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-science', 1);
     insertRss.run('rss-pib-en', 'PIB India (English)', 'https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1', 'en', 'cat-national', 1);
     insertRss.run('rss-pib-hi', 'PIB India (Hindi)', 'https://pib.gov.in/RssMain.aspx?ModId=6&Lang=2&Regid=3', 'hi', 'cat-national', 1);
   }
@@ -239,9 +432,11 @@ function seedInitialData(): void {
     const insertSetting = db.prepare('INSERT INTO site_settings (id, setting_key, setting_value) VALUES (?, ?, ?)');
     const defaults: Array<[string, string]> = [
       ['publishing_mode', 'manual_approval'],
-      ['rss_interval_minutes', '60'],
+      ['rss_interval_minutes', '30'],
       ['rss_auto_enabled', 'true'],
       ['ai_quality_checks', 'true'],
+      ['epaper_auto_hour_ist', '6'],
+      ['digest_auto_hour_ist', '7'],
       ['tagline_hi', 'सच के साथ, जनता के विश्वास के साथ'],
       ['tagline_en', 'News from India & Beyond'],
       ['admin_email', 'maheepmedia@gmail.com'],
@@ -255,8 +450,11 @@ function seedInitialData(): void {
 
   const artCount = (db.prepare('SELECT COUNT(*) as count FROM articles').get() as { count: number }).count;
   if (artCount === 0) {
-    const now = Date.now();
-    const hoursAgo = (h: number) => new Date(now - h * 3600_000).toISOString();
+    const istTimestampOnDay = (daysAgo: number, hourIst: number) => {
+      const dateStr = getIndiaDateOffset(daysAgo);
+      const hh = String(hourIst).padStart(2, '0');
+      return new Date(`${dateStr}T${hh}:15:00+05:30`).toISOString();
+    };
     const imgParliament = '/src/assets/images/hero_parliament_india_1795494842593.jpg';
     const imgEconomy = '/src/assets/images/news_digital_economy_1795494842110.jpg';
     const imgSolar = '/src/assets/images/news_rural_solar_tech_1795494844202.jpg';
@@ -281,7 +479,7 @@ function seedInitialData(): void {
         featured: 1,
         breaking: 1,
         views: 1840,
-        published_at: hoursAgo(1),
+        published_at: istTimestampOnDay(0, 18),
       },
       {
         id: 'art-2',
@@ -301,7 +499,7 @@ function seedInitialData(): void {
         featured: 1,
         breaking: 1,
         views: 1520,
-        published_at: hoursAgo(2),
+        published_at: istTimestampOnDay(0, 16),
       },
       {
         id: 'art-3',
@@ -321,7 +519,7 @@ function seedInitialData(): void {
         featured: 1,
         breaking: 0,
         views: 1190,
-        published_at: hoursAgo(3),
+        published_at: istTimestampOnDay(0, 14),
       },
       {
         id: 'art-4',
@@ -341,7 +539,7 @@ function seedInitialData(): void {
         featured: 1,
         breaking: 0,
         views: 980,
-        published_at: hoursAgo(4),
+        published_at: istTimestampOnDay(0, 11),
       },
       {
         id: 'art-5',
@@ -361,7 +559,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 1,
         views: 1110,
-        published_at: hoursAgo(5),
+        published_at: istTimestampOnDay(0, 9),
       },
       {
         id: 'art-6',
@@ -381,7 +579,7 @@ function seedInitialData(): void {
         featured: 1,
         breaking: 0,
         views: 1340,
-        published_at: hoursAgo(6),
+        published_at: istTimestampOnDay(0, 7),
       },
       {
         id: 'art-7',
@@ -401,7 +599,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 870,
-        published_at: hoursAgo(7),
+        published_at: istTimestampOnDay(1, 17),
       },
       {
         id: 'art-8',
@@ -421,7 +619,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 760,
-        published_at: hoursAgo(8),
+        published_at: istTimestampOnDay(1, 15),
       },
       {
         id: 'art-9',
@@ -441,7 +639,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 910,
-        published_at: hoursAgo(9),
+        published_at: istTimestampOnDay(1, 13),
       },
       {
         id: 'art-10',
@@ -461,7 +659,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 830,
-        published_at: hoursAgo(10),
+        published_at: istTimestampOnDay(1, 11),
       },
       {
         id: 'art-11',
@@ -481,7 +679,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 690,
-        published_at: hoursAgo(11),
+        published_at: istTimestampOnDay(1, 9),
       },
       {
         id: 'art-12',
@@ -501,7 +699,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 540,
-        published_at: hoursAgo(12),
+        published_at: istTimestampOnDay(2, 18),
       },
       {
         id: 'art-13',
@@ -521,7 +719,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 495,
-        published_at: hoursAgo(14),
+        published_at: istTimestampOnDay(2, 16),
       },
       {
         id: 'art-14',
@@ -541,7 +739,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 615,
-        published_at: hoursAgo(16),
+        published_at: istTimestampOnDay(2, 14),
       },
       {
         id: 'art-15',
@@ -561,7 +759,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 1050,
-        published_at: hoursAgo(18),
+        published_at: istTimestampOnDay(2, 11),
       },
       {
         id: 'art-16',
@@ -581,7 +779,7 @@ function seedInitialData(): void {
         featured: 0,
         breaking: 0,
         views: 740,
-        published_at: hoursAgo(20),
+        published_at: istTimestampOnDay(2, 9),
       },
     ];
 
@@ -624,33 +822,177 @@ function seedInitialData(): void {
       VALUES (?, ?, ?, ?, ?, ?, ?, 'published', ?)
     `);
 
-    const published = db
-      .prepare(`
-        SELECT a.id, a.title, a.slug, a.summary, a.image_url, a.source_name, a.author, a.language, a.published_at,
-               c.name as category_name, c.slug as category_slug, s.name as state_name
-        FROM articles a
-        LEFT JOIN categories c ON c.id = a.category_id
-        LEFT JOIN states s ON s.id = a.state_id
-        WHERE a.status = 'published'
-        ORDER BY a.featured DESC, a.published_at DESC
-      `)
-      .all() as Array<Record<string, unknown>>;
-
     for (let d = 0; d < 3; d++) {
       const dateStr = getIndiaDateOffset(d);
+      const dayArticles = db
+        .prepare(`
+          SELECT a.id, a.title, a.slug, a.summary, a.image_url, a.source_name, a.author, a.language, a.published_at,
+                 c.name as category_name, c.slug as category_slug, s.name as state_name
+          FROM articles a
+          LEFT JOIN categories c ON c.id = a.category_id
+          LEFT JOIN states s ON s.id = a.state_id
+          WHERE a.status = 'published'
+            AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+          ORDER BY a.featured DESC, a.published_at DESC
+        `)
+        .all(dateStr) as Array<Record<string, unknown>>;
+
+      if (dayArticles.length === 0) continue;
       const id = `ed-${dateStr}`;
-      const pages = buildEditionPagesPayload(dateStr, published);
+      const pages = buildEditionPagesPayload(dateStr, dayArticles);
+      const cover = String(
+        dayArticles.find((a) => Boolean(a.image_url))?.image_url ||
+          '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+      );
       insertEd.run(
         id,
         dateStr,
         d === 0 ? `Maheep Daily Digital Edition — ${dateStr}` : `Maheep Archive Edition — ${dateStr}`,
         `/api/editions/${id}/html`,
-        '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+        cover,
         pages.length,
-        published.length,
+        dayArticles.length,
         JSON.stringify({ pages }),
       );
     }
+  }
+
+  // One-time migration for existing databases where seeded sample articles all shared one day
+  if (getSetting('epaper_date_distinct_v1', '') !== 'done') {
+    const dayMap: Array<{ ids: string[]; daysAgo: number }> = [
+      { ids: ['art-1', 'art-2', 'art-3', 'art-4', 'art-5', 'art-6'], daysAgo: 0 },
+      { ids: ['art-7', 'art-8', 'art-9', 'art-10', 'art-11'], daysAgo: 1 },
+      { ids: ['art-12', 'art-13', 'art-14', 'art-15', 'art-16'], daysAgo: 2 },
+    ];
+    for (const group of dayMap) {
+      const targetDate = getIndiaDateOffset(group.daysAgo);
+      group.ids.forEach((artId, idx) => {
+        const hh = String(18 - idx * 2).padStart(2, '0');
+        const iso = new Date(`${targetDate}T${hh}:15:00+05:30`).toISOString();
+        db.prepare('UPDATE articles SET published_at = ? WHERE id = ?').run(iso, artId);
+      });
+    }
+    for (let d = 0; d < 3; d++) {
+      const dateStr = getIndiaDateOffset(d);
+      const edId = `ed-${dateStr}`;
+      const existingEd = db.prepare('SELECT id FROM editions WHERE id = ?').get(edId);
+      if (existingEd) {
+        const dayArticles = db
+          .prepare(`
+            SELECT a.id, a.title, a.slug, a.summary, a.image_url, a.source_name, a.author, a.language, a.published_at,
+                   c.name as category_name, c.slug as category_slug, s.name as state_name
+            FROM articles a
+            LEFT JOIN categories c ON c.id = a.category_id
+            LEFT JOIN states s ON s.id = a.state_id
+            WHERE a.status = 'published'
+              AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+            ORDER BY a.featured DESC, a.published_at DESC
+          `)
+          .all(dateStr) as Array<Record<string, unknown>>;
+        if (dayArticles.length > 0) {
+          const pages = buildEditionPagesPayload(dateStr, dayArticles);
+          const cover = String(
+            dayArticles.find((a) => Boolean(a.image_url))?.image_url ||
+              '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+          );
+          db.prepare(
+            'UPDATE editions SET cover_image = ?, page_count = ?, article_count = ?, content_json = ? WHERE id = ?',
+          ).run(cover, pages.length, dayArticles.length, JSON.stringify({ pages }), edId);
+        }
+      }
+    }
+    setSetting('epaper_date_distinct_v1', 'done');
+  }
+
+  // Re-sync all existing editions by strict IST date and remove stale cloned editions with 0 articles on that date
+  if (getSetting('epaper_date_cleanup_v2', '') !== 'done') {
+    const existingEditions = db
+      .prepare('SELECT id, edition_date FROM editions')
+      .all() as Array<{ id: string; edition_date: string }>;
+
+    const findDayArticles = db.prepare(`
+      SELECT a.id, a.title, a.slug, a.summary, a.image_url, a.source_name, a.author, a.language, a.published_at,
+             c.name as category_name, c.slug as category_slug, s.name as state_name
+      FROM articles a
+      LEFT JOIN categories c ON c.id = a.category_id
+      LEFT JOIN states s ON s.id = a.state_id
+      WHERE a.status = 'published'
+        AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+      ORDER BY a.featured DESC, a.breaking DESC, a.published_at DESC
+      LIMIT 30
+    `);
+
+    const updateEdition = db.prepare(
+      'UPDATE editions SET cover_image = ?, page_count = ?, article_count = ?, content_json = ? WHERE id = ?',
+    );
+    const deleteEdition = db.prepare('DELETE FROM editions WHERE id = ?');
+
+    for (const ed of existingEditions) {
+      const dayArticles = findDayArticles.all(ed.edition_date) as Array<Record<string, unknown>>;
+      if (dayArticles.length > 0) {
+        const pages = buildEditionPagesPayload(ed.edition_date, dayArticles);
+        const cover = String(
+          dayArticles.find((a) => Boolean(a.image_url))?.image_url ||
+            '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+        );
+        updateEdition.run(cover, pages.length, dayArticles.length, JSON.stringify({ pages }), ed.id);
+      } else {
+        deleteEdition.run(ed.id);
+      }
+    }
+    setSetting('epaper_date_cleanup_v2', 'done');
+  }
+
+  // Rebuild existing editions with deduplicated section pages and real-news-first ordering
+  if (getSetting('epaper_date_cleanup_v3', '') !== 'done') {
+    const existingEditions = db
+      .prepare('SELECT id, edition_date FROM editions')
+      .all() as Array<{ id: string; edition_date: string }>;
+
+    const findDayArticles = db.prepare(`
+      SELECT a.id, a.title, a.slug, a.summary, a.image_url, a.source_name, a.author, a.language, a.published_at,
+             c.name as category_name, c.slug as category_slug, s.name as state_name
+      FROM articles a
+      LEFT JOIN categories c ON c.id = a.category_id
+      LEFT JOIN states s ON s.id = a.state_id
+      WHERE a.status = 'published'
+        AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+      ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC, a.featured DESC, a.breaking DESC
+      LIMIT 30
+    `);
+
+    const updateEdition = db.prepare(
+      'UPDATE editions SET cover_image = ?, page_count = ?, article_count = ?, content_json = ? WHERE id = ?',
+    );
+    const deleteEdition = db.prepare('DELETE FROM editions WHERE id = ?');
+
+    for (const ed of existingEditions) {
+      const dayArticles = findDayArticles.all(ed.edition_date) as Array<Record<string, unknown>>;
+      if (dayArticles.length > 0) {
+        const pages = buildEditionPagesPayload(ed.edition_date, dayArticles);
+        const cover = String(
+          dayArticles.find((a) => Boolean(a.image_url))?.image_url ||
+            '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+        );
+        updateEdition.run(cover, pages.length, dayArticles.length, JSON.stringify({ pages }), ed.id);
+      } else {
+        deleteEdition.run(ed.id);
+      }
+    }
+    setSetting('epaper_date_cleanup_v3', 'done');
+  }
+
+  // Ensure topic RSS feeds exist in existing DBs so Business, Sports, Tech, and Science stay stocked
+  if (getSetting('rss_topic_feeds_v1', '') !== 'done') {
+    const insertTopicRss = db.prepare(
+      'INSERT OR IGNORE INTO rss_sources (id, name, feed_url, language, category_id, enabled) VALUES (?, ?, ?, ?, ?, 1)',
+    );
+    insertTopicRss.run('rss-gnews-biz', 'Google News India — Business', 'https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-business');
+    insertTopicRss.run('rss-gnews-sports', 'Google News India — Sports', 'https://news.google.com/rss/headlines/section/topic/SPORTS?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-sports');
+    insertTopicRss.run('rss-gnews-tech', 'Google News India — Technology', 'https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-technology');
+    insertTopicRss.run('rss-gnews-sci', 'Google News India — Science', 'https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-science');
+
+    setSetting('rss_topic_feeds_v1', 'done');
   }
 
   const adminCount = (db.prepare('SELECT COUNT(*) as count FROM admin_users').get() as { count: number }).count;
@@ -667,21 +1009,40 @@ function seedInitialData(): void {
 }
 
 export function buildEditionPagesPayload(dateStr: string, articles: Array<Record<string, unknown>>) {
-  const byCat = (slugs: string[]) => articles.filter((a) => slugs.includes(String(a.category_slug || '')));
   const coverStories = articles.slice(0, 4);
-  const nationalStories = byCat(['national', 'international', 'editorial']).slice(0, 6);
-  const stateStories = byCat(['state']).slice(0, 6);
-  const bizSports = byCat(['business', 'sports']).slice(0, 6);
-  const techEduSci = byCat(['technology', 'education', 'science', 'entertainment']).slice(0, 6);
+  const usedIds = new Set(coverStories.map((a) => String(a.id || a.title || '')));
+  const remaining = articles.filter((a) => !usedIds.has(String(a.id || a.title || '')));
 
-  const pages = [
-    { pageNumber: 1, sectionTitle: 'Front Page · मुख्य पृष्ठ', subtitle: `Edition Date: ${dateStr}`, articles: coverStories },
-    { pageNumber: 2, sectionTitle: 'National & International · राष्ट्रीय एवं अंतर्राष्ट्रीय', subtitle: 'Parliament, Policy, Defence & Diplomacy', articles: nationalStories.length ? nationalStories : coverStories },
-    { pageNumber: 3, sectionTitle: 'States & Union Territories · राज्य समाचार', subtitle: 'Regional Reports Across India', articles: stateStories.length ? stateStories : articles.slice(2, 6) },
-    { pageNumber: 4, sectionTitle: 'Business & Sports · व्यापार और खेल', subtitle: 'Markets, Economy, Cricket & Athletics', articles: bizSports.length ? bizSports : articles.slice(1, 5) },
-    { pageNumber: 5, sectionTitle: 'Technology, Science & Education · तकनीक, विज्ञान एवं शिक्षा', subtitle: 'Innovation, Campuses & Culture', articles: techEduSci.length ? techEduSci : articles.slice(0, 4) },
+  const takeByCat = (slugs: string[], limit = 6) => {
+    const picked = remaining
+      .filter((a) => !usedIds.has(String(a.id || a.title || '')) && slugs.includes(String(a.category_slug || '')))
+      .slice(0, limit);
+    for (const item of picked) usedIds.add(String(item.id || item.title || ''));
+    return picked;
+  };
+
+  const nationalStories = takeByCat(['national', 'international', 'editorial'], 6);
+  const stateStories = takeByCat(['state'], 6);
+  const bizSports = takeByCat(['business', 'sports'], 6);
+  const techEduSci = takeByCat(['technology', 'education', 'science', 'entertainment'], 6);
+  const moreStories = remaining.filter((a) => !usedIds.has(String(a.id || a.title || ''))).slice(0, 6);
+
+  const candidates = [
+    { sectionTitle: 'Front Page · मुख्य पृष्ठ', subtitle: `Edition Date: ${dateStr}`, articles: coverStories },
+    { sectionTitle: 'National & International · राष्ट्रीय एवं अंतर्राष्ट्रीय', subtitle: 'Parliament, Policy, Defence & Diplomacy', articles: nationalStories },
+    { sectionTitle: 'States & Union Territories · राज्य समाचार', subtitle: 'Regional Reports Across India', articles: stateStories },
+    { sectionTitle: 'Business & Sports · व्यापार और खेल', subtitle: 'Markets, Economy, Cricket & Athletics', articles: bizSports },
+    { sectionTitle: 'Technology, Science & Education · तकनीक, विज्ञान एवं शिक्षा', subtitle: 'Innovation, Campuses & Culture', articles: techEduSci },
+    { sectionTitle: 'Additional Dispatches · अन्य प्रमुख समाचार', subtitle: `More Reports for ${dateStr}`, articles: moreStories },
   ];
-  return pages;
+
+  const nonEmpty = candidates.filter((p) => p.articles.length > 0);
+  return nonEmpty.map((p, idx) => ({
+    pageNumber: idx + 1,
+    sectionTitle: p.sectionTitle,
+    subtitle: p.subtitle,
+    articles: p.articles,
+  }));
 }
 
 export function getSetting(key: string, fallback = ''): string {

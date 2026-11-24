@@ -1,6 +1,7 @@
 import { ArrowRight, BookOpen, Download, MapPin, TrendingUp } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { AdSlot } from '../components/AdSlot.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
@@ -13,6 +14,14 @@ interface HomePayload {
   featured: Article[];
   latest: Article[];
   trending: Article[];
+  sections?: {
+    national: Article[];
+    state: Article[];
+    business: Article[];
+    sports: Article[];
+    technology: Article[];
+    education: Article[];
+  };
   states: StateItem[];
   latestEdition: Edition | null;
 }
@@ -23,6 +32,7 @@ export function HomePage() {
   const [loading, setLoading] = useState(true);
   const [newsletterEmail, setNewsletterEmail] = useState('');
   const [newsletterFeedback, setNewsletterFeedback] = useState('');
+  const [newsletterConfirmUrl, setNewsletterConfirmUrl] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -45,29 +55,32 @@ export function HomePage() {
   const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
     setNewsletterFeedback('');
+    setNewsletterConfirmUrl('');
     const res = await fetch('/api/newsletter', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: newsletterEmail }),
+      body: JSON.stringify({ email: newsletterEmail, language_pref: language }),
     });
     const json = await res.json();
     setNewsletterFeedback(json.message || json.error || '');
+    if (json.confirmUrl) setNewsletterConfirmUrl(json.confirmUrl);
     if (res.ok) setNewsletterEmail('');
   };
 
   const leadArticle = data?.featured?.[0] || data?.latest?.[0];
   const secondaryFeatured = (data?.featured || []).slice(1, 4);
-  const latestFeed = (data?.latest || []).filter((a) => a.id !== leadArticle?.id);
+  const featuredIds = new Set([leadArticle?.id, ...secondaryFeatured.map((a) => a.id)].filter(Boolean));
+  const latestFeed = (data?.latest || []).filter((a) => !featuredIds.has(a.id));
 
-  const byCategory = (slugs: string[]) =>
+  const fallbackByCat = (slugs: string[]) =>
     latestFeed.filter((a) => slugs.includes(a.category_slug || '')).slice(0, 3);
 
-  const nationalList = byCategory(['national', 'international']);
-  const stateList = byCategory(['state']);
-  const businessList = byCategory(['business']);
-  const sportsList = byCategory(['sports']);
-  const techList = byCategory(['technology', 'science']);
-  const educationList = byCategory(['education', 'entertainment']);
+  const nationalList = (data?.sections?.national || fallbackByCat(['national', 'international'])).slice(0, 3);
+  const stateList = (data?.sections?.state || fallbackByCat(['state'])).slice(0, 3);
+  const businessList = (data?.sections?.business || fallbackByCat(['business'])).slice(0, 3);
+  const sportsList = (data?.sections?.sports || fallbackByCat(['sports'])).slice(0, 3);
+  const techList = (data?.sections?.technology || fallbackByCat(['technology', 'science'])).slice(0, 3);
+  const educationList = (data?.sections?.education || fallbackByCat(['education', 'entertainment'])).slice(0, 3);
 
   const topStates = (data?.states || []).slice(0, 12);
 
@@ -80,6 +93,8 @@ export function HomePage() {
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-12">
+        <AdSlot placement="header_banner" />
+
         {loading && !data ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-pulse">
             <div className="lg:col-span-8 h-80 bg-neutral-200 dark:bg-neutral-800 rounded-lg" />
@@ -181,6 +196,8 @@ export function HomePage() {
                     </div>
                   </div>
                 )}
+
+                <AdSlot placement="sidebar" />
               </aside>
             </section>
 
@@ -203,6 +220,8 @@ export function HomePage() {
                 ))}
               </div>
             </section>
+
+            <AdSlot placement="homepage_mid" />
 
             {/* Tier 3: National & States Split */}
             <section className="grid grid-cols-1 lg:grid-cols-2 gap-10 pt-6 border-t border-neutral-200 dark:border-neutral-800">
@@ -232,9 +251,11 @@ export function HomePage() {
                   </Link>
                 </div>
                 <div>
-                  {(stateList.length ? stateList : latestFeed.slice(0, 3)).map((art) => (
-                    <NewsCard key={art.id} article={art} variant="compact" />
-                  ))}
+                  {stateList.length > 0 ? (
+                    stateList.map((art) => <NewsCard key={art.id} article={art} variant="compact" />)
+                  ) : (
+                    <p className="text-xs text-neutral-500 py-4">Regional dispatches updating shortly.</p>
+                  )}
                 </div>
 
                 {/* Quick State Directory Links */}
@@ -278,9 +299,11 @@ export function HomePage() {
                   <h2 className="font-editorial text-lg font-bold">Sports</h2>
                   <Link to="/business-sports?tab=sports" className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80]">More</Link>
                 </div>
-                {(sportsList.length ? sportsList : latestFeed.slice(0, 2)).map((art) => (
-                  <NewsCard key={art.id} article={art} variant="compact" />
-                ))}
+                {sportsList.length > 0 ? (
+                  sportsList.map((art) => <NewsCard key={art.id} article={art} variant="compact" />)
+                ) : (
+                  <p className="text-xs text-neutral-500 py-4">Sports dispatches updating shortly.</p>
+                )}
               </div>
 
               <div>
@@ -332,7 +355,19 @@ export function HomePage() {
               </form>
             </section>
             {newsletterFeedback && (
-              <p className="text-sm font-medium text-[#00652E] dark:text-[#4ade80] -mt-8">{newsletterFeedback}</p>
+              <div className="-mt-8 space-y-1">
+                <p className="text-sm font-medium text-[#00652E] dark:text-[#4ade80]">{newsletterFeedback}</p>
+                {newsletterConfirmUrl && (
+                  <a
+                    href={newsletterConfirmUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-block text-xs underline font-semibold text-[#00451F] dark:text-[#4ade80]"
+                  >
+                    Click to Confirm Subscription →
+                  </a>
+                )}
+              </div>
             )}
           </>
         )}

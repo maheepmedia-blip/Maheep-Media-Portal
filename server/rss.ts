@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { XMLParser } from 'fast-xml-parser';
 import { db, getSetting, setSetting } from './db.ts';
+import { generateEditionForDate } from './epaper.ts';
 import { runEditorialAiAssist } from './gemini.ts';
 
 const parser = new XMLParser({
@@ -102,10 +103,35 @@ function stripHtml(raw: string): string {
     .trim();
 }
 
+export function detectBreakingCandidate(title: string, summary: string): boolean {
+  const combined = `${title} ${summary}`.toLowerCase();
+  const urgentSignals = [
+    'breaking',
+    'supreme court verdict',
+    'parliament passes',
+    'cabinet approves',
+    'rbi repo rate',
+    'cyclone alert',
+    'red alert',
+    'earthquake',
+    'isro launch',
+    'election commission',
+    'budget',
+    'pm modi',
+    'ब्रेकिंग',
+    'सुप्रीम कोर्ट',
+    'कैबिनेट',
+    'अलर्ट',
+    'भूकंप',
+    'इसरो',
+    'आरबीआई',
+  ];
+  return urgentSignals.some((kw) => combined.includes(kw));
+}
+
 export function autoClassify(text: string, fallbackCategoryId: string | null): { categoryId: string; stateId: string | null } {
   const lower = text.toLowerCase();
 
-  // Check state/UT match first
   const states = db.prepare('SELECT id, name FROM states').all() as Array<{ id: string; name: string }>;
   let matchedStateId: string | null = null;
   for (const st of states) {
@@ -113,6 +139,11 @@ export function autoClassify(text: string, fallbackCategoryId: string | null): {
       matchedStateId = st.id;
       break;
     }
+  }
+
+  // Dedicated topic feeds (Business, Sports, Technology, Science, etc.) keep their assigned desk category
+  if (fallbackCategoryId && fallbackCategoryId !== 'cat-national') {
+    return { categoryId: fallbackCategoryId, stateId: matchedStateId };
   }
 
   const rules: Array<[string, string[]]> = [
@@ -242,6 +273,11 @@ export async function runSingleRssSource(sourceId: string) {
 
     for (const item of items) {
       try {
+        if (!item.title || item.title.length < 6 || !item.summary) {
+          failed++;
+          continue;
+        }
+
         const existingUrl = db
           .prepare('SELECT id FROM articles WHERE source_url = ?')
           .get(item.link) as { id: string } | undefined;
@@ -258,20 +294,26 @@ export async function runSingleRssSource(sourceId: string) {
         }
 
         const { categoryId, stateId } = autoClassify(`${item.title} ${item.summary}`, source.category_id);
+        const isBreakingCandidate = detectBreakingCandidate(item.title, item.summary) ? 1 : 0;
 
         let finalStatus: 'pending' | 'published' = mode === 'manual_approval' ? 'pending' : 'published';
         let aiAssisted = 0;
+        let aiAuditJson = '{}';
 
         if (mode === 'auto_publish_ai' && process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY') {
           try {
             const check = await runEditorialAiAssist({
               action: 'check_quality',
+              actorEmail: 'rss:auto_publish_ai',
               title: item.title,
               summary: item.summary,
+              sourceName: item.sourceName,
+              sourceUrl: item.link,
               language: source.language,
               existingTitles: recentTitles.slice(0, 15),
             });
             aiAssisted = 1;
+            aiAuditJson = JSON.stringify({ ...check, checkedAt: new Date().toISOString() });
             if (check && check.approved === false) {
               finalStatus = 'pending';
             }
@@ -288,8 +330,8 @@ export async function runSingleRssSource(sourceId: string) {
           INSERT INTO articles (
             id, title, slug, summary, content, image_url, source_name, source_url,
             author, language, category_id, state_id, status, featured, breaking,
-            ai_assisted, published_at
-          ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+            breaking_candidate, ai_assisted, ai_audit_json, published_at
+          ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
         `).run(
           articleId,
           item.title,
@@ -303,7 +345,9 @@ export async function runSingleRssSource(sourceId: string) {
           categoryId,
           stateId,
           finalStatus,
+          isBreakingCandidate,
           aiAssisted,
+          aiAuditJson,
           item.publishedAt,
         );
 
@@ -346,36 +390,51 @@ export async function runSingleRssSource(sourceId: string) {
   return { sourceId: source.id, name: source.name, status: logStatus, imported, skipped, failed, error: errorMsg };
 }
 
+export async function retryFailedRssSources() {
+  const failedSources = db
+    .prepare("SELECT id FROM rss_sources WHERE enabled = 1 AND last_error != ''")
+    .all() as Array<{ id: string }>;
+  const results = [];
+  for (const s of failedSources) {
+    results.push(await runSingleRssSource(s.id));
+  }
+  syncDailyEditionsForRecentArticles();
+  return results;
+}
+
+export function syncDailyEditionsForRecentArticles(): void {
+  const activeDates = db
+    .prepare(`
+      SELECT DISTINCT date(datetime(published_at, '+5 hours', '+30 minutes')) as ist_date
+      FROM articles
+      WHERE status = 'published' AND published_at IS NOT NULL
+      ORDER BY ist_date DESC
+      LIMIT 7
+    `)
+    .all() as Array<{ ist_date: string }>;
+
+  for (const row of activeDates) {
+    if (!row.ist_date) continue;
+    try {
+      generateEditionForDate(row.ist_date);
+    } catch {
+      // Skip dates without published stories
+    }
+  }
+}
+
 export async function runAllEnabledRssSources() {
   const sources = db.prepare('SELECT id FROM rss_sources WHERE enabled = 1').all() as Array<{ id: string }>;
   const results = [];
   for (const s of sources) {
-    // Isolate each feed so one failure never stops the remaining feeds
     const res = await runSingleRssSource(s.id);
     results.push(res);
   }
+  syncDailyEditionsForRecentArticles();
   const nowIso = new Date().toISOString();
-  const intervalMin = Math.max(15, Number(getSetting('rss_interval_minutes', '60')) || 60);
+  const intervalMin = Math.max(15, Number(getSetting('rss_interval_minutes', '30')) || 30);
   const nextIso = new Date(Date.now() + intervalMin * 60_000).toISOString();
   setSetting('rss_last_run_at', nowIso);
   setSetting('rss_next_run_at', nextIso);
   return results;
-}
-
-let schedulerTimer: ReturnType<typeof setInterval> | null = null;
-
-export function startRssScheduler(): void {
-  if (schedulerTimer) clearInterval(schedulerTimer);
-  const enabled = getSetting('rss_auto_enabled', 'true') === 'true';
-  const intervalMin = Math.max(15, Number(getSetting('rss_interval_minutes', '60')) || 60);
-  if (!enabled) return;
-
-  const nextIso = new Date(Date.now() + intervalMin * 60_000).toISOString();
-  setSetting('rss_next_run_at', nextIso);
-
-  schedulerTimer = setInterval(() => {
-    void runAllEnabledRssSources().catch((err) => {
-      console.error('Scheduled RSS collection error:', err);
-    });
-  }, intervalMin * 60_000);
 }

@@ -20,6 +20,11 @@ export function BusinessSportsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const tabParam = searchParams.get('tab') === 'sports' ? 'sports' : 'business';
+    setActiveTab(tabParam);
+  }, [searchParams]);
+
+  useEffect(() => {
     setLoading(true);
     const langParam = language !== 'all' ? `&language=${language}` : '';
     const subParam = subtopic !== 'All' ? `&subtopic=${encodeURIComponent(subtopic)}` : '';

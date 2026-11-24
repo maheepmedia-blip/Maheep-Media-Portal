@@ -34,7 +34,7 @@ export function StatesPage() {
     setLoading(true);
     const params = new URLSearchParams({ limit: '36' });
     if (slug) params.set('state', slug);
-    else params.set('category', 'state');
+    else params.set('state', 'any');
     if (catFilter !== 'all') params.set('category', catFilter);
     if (language !== 'all') params.set('language', language);
 

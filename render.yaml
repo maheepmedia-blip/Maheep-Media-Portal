@@ -1,0 +1,51 @@
+# Render Blueprint Configuration for Maheep News Portal
+# Docs: https://render.com/docs/blueprint-spec
+# Note: Store secrets (GEMINI_API_KEY, SESSION_SECRET, CRON_SECRET, SMTP_PASS, VAPID_PRIVATE_KEY)
+# strictly in Render Environment Variables UI — never commit secrets to git.
+
+services:
+  - type: web
+    name: maheep-news-portal
+    runtime: node
+    plan: starter
+    region: singapore
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: maheep-persistent-data
+      mountPath: /var/data/maheep
+      sizeGB: 5
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DATA_DIR
+        value: /var/data/maheep
+      - key: ADMIN_EMAIL
+        value: maheepmedia@gmail.com
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        value: Maheep News Portal <noreply@maheepnews.in>
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:maheepmedia@gmail.com

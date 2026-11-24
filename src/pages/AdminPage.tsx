@@ -1,5 +1,8 @@
 import {
+  Activity,
+  BarChart3,
   BookOpen,
+  Calendar,
   CheckCircle2,
   Download,
   ExternalLink,
@@ -8,6 +11,7 @@ import {
   LayoutDashboard,
   LogOut,
   Mail,
+  Megaphone,
   Newspaper,
   Play,
   Plus,
@@ -20,13 +24,18 @@ import {
 } from 'lucide-react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { AdminAdsPanel } from '../components/admin/AdminAdsPanel.tsx';
 import { AdminArticleModal } from '../components/admin/AdminArticleModal.tsx';
 import { AdminAuthGate } from '../components/admin/AdminAuthGate.tsx';
+import { AdminCalendarPanel } from '../components/admin/AdminCalendarPanel.tsx';
+import { AdminCommunityPanel } from '../components/admin/AdminCommunityPanel.tsx';
 import { AdminMigrationPanel } from '../components/admin/AdminMigrationPanel.tsx';
+import { AdminSystemPanel } from '../components/admin/AdminSystemPanel.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
 import type {
   AdminUser,
+  Advertisement,
   Article,
   Category,
   ContactSubmission,
@@ -41,9 +50,13 @@ import { downloadEditionPdf } from '../utils/pdf.ts';
 type AdminTab =
   | 'overview'
   | 'articles'
+  | 'calendar'
   | 'rss'
   | 'publishing'
   | 'editions'
+  | 'ads'
+  | 'community'
+  | 'system'
   | 'migration'
   | 'taxonomy'
   | 'contacts'
@@ -62,11 +75,16 @@ export function AdminPage() {
       publishedArticles: number;
       draftArticles: number;
       pendingArticles: number;
+      scheduledArticles?: number;
+      breakingCandidates?: number;
       todaysArticles: number;
     };
     editions: number;
+    adsActive?: number;
     contactsNew: number;
+    commentsPending?: number;
     subscribers: number;
+    pushSubscribers?: number;
     rssSources: RssSource[];
     recentLogs: RssLog[];
     scheduling: {
@@ -83,6 +101,7 @@ export function AdminPage() {
   const [rssSources, setRssSources] = useState<RssSource[]>([]);
   const [rssLogs, setRssLogs] = useState<RssLog[]>([]);
   const [editions, setEditions] = useState<Edition[]>([]);
+  const [ads, setAds] = useState<Advertisement[]>([]);
   const [contacts, setContacts] = useState<ContactSubmission[]>([]);
   const [subscribers, setSubscribers] = useState<Array<{ id: string; email: string; status: string; created_at: string }>>([]);
   const [settings, setSettings] = useState<Record<string, string>>({});
@@ -135,7 +154,7 @@ export function AdminPage() {
   const loadAll = useCallback(async () => {
     if (!adminToken) return;
     try {
-      const [ov, art, cat, st, rss, ed, cnt, sub, setRes] = await Promise.all([
+      const [ov, art, cat, st, rss, ed, adRes, cnt, sub, setRes] = await Promise.all([
         authFetch('/api/admin/overview').then((r) => r.json()),
         authFetch(
           `/api/admin/articles?status=${artStatus}&language=${artLang}&q=${encodeURIComponent(artSearch)}`,
@@ -144,6 +163,7 @@ export function AdminPage() {
         fetch('/api/states').then((r) => r.json()),
         authFetch('/api/admin/rss').then((r) => r.json()),
         authFetch('/api/admin/editions').then((r) => r.json()),
+        authFetch('/api/admin/ads').then((r) => r.json()),
         authFetch('/api/admin/contacts').then((r) => r.json()),
         authFetch('/api/admin/subscribers').then((r) => r.json()),
         authFetch('/api/admin/settings').then((r) => r.json()),
@@ -156,6 +176,7 @@ export function AdminPage() {
       setRssSources(rss.sources || []);
       setRssLogs(rss.logs || []);
       setEditions(ed.editions || []);
+      setAds(adRes.ads || []);
       setContacts(cnt.contacts || []);
       setSubscribers(sub.subscribers || []);
       setSettings(setRes.settings || {});
@@ -284,6 +305,7 @@ export function AdminPage() {
   };
 
   const generateEdition = async (dateStr?: string) => {
+    setError('');
     const res = await authFetch('/api/admin/editions/generate', {
       method: 'POST',
       body: JSON.stringify({ edition_date: dateStr || editionDateInput }),
@@ -333,9 +355,13 @@ export function AdminPage() {
   const navItems: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'articles', label: 'Articles', icon: Newspaper },
+    { id: 'calendar', label: 'Editorial Calendar', icon: Calendar },
     { id: 'rss', label: 'RSS Engine', icon: Rss },
     { id: 'publishing', label: 'Publishing & AI', icon: Sliders },
     { id: 'editions', label: 'E-Paper Editions', icon: BookOpen },
+    { id: 'ads', label: 'Advertisements', icon: Megaphone },
+    { id: 'community', label: 'Comments & Analytics', icon: BarChart3 },
+    { id: 'system', label: 'System, Backups & Cron', icon: Activity },
     { id: 'migration', label: 'Sheets Migration', icon: FileSpreadsheet },
     { id: 'taxonomy', label: 'Categories & States', icon: FolderTree },
     { id: 'contacts', label: 'Contacts & Readers', icon: Mail },
@@ -445,11 +471,15 @@ export function AdminPage() {
                   ['Total Articles', overview.stats.totalArticles],
                   ['Published', overview.stats.publishedArticles],
                   ['Pending Review', overview.stats.pendingArticles],
-                  ['Drafts', overview.stats.draftArticles],
+                  ['Scheduled Releases', overview.stats.scheduledArticles ?? 0],
+                  ['Breaking Candidates', overview.stats.breakingCandidates ?? 0],
                   ["Today's News", overview.stats.todaysArticles],
                   ['E-Paper Editions', overview.editions],
+                  ['Active Ads', overview.adsActive ?? 0],
+                  ['Pending Comments', overview.commentsPending ?? 0],
                   ['Unread Contacts', overview.contactsNew],
                   ['Newsletter Readers', overview.subscribers],
+                  ['Push Subscribers', overview.pushSubscribers ?? 0],
                 ].map(([label, val]) => (
                   <div
                     key={String(label)}
@@ -534,6 +564,8 @@ export function AdminPage() {
                     <option value="all">All Statuses</option>
                     <option value="published">Published</option>
                     <option value="pending">Pending Review</option>
+                    <option value="scheduled">Scheduled Queue</option>
+                    <option value="breaking_candidate">Breaking Candidates</option>
                     <option value="draft">Draft</option>
                     <option value="archived">Archived</option>
                   </select>
@@ -611,7 +643,17 @@ export function AdminPage() {
                         </td>
                         <td className="p-3 max-w-sm">
                           <div className="font-semibold text-neutral-900 dark:text-neutral-100 line-clamp-2">{art.title}</div>
-                          <div className="text-neutral-500 mt-0.5">{art.source_name} · {formatIndiaDateTime(art.published_at || art.created_at)}</div>
+                          <div className="text-neutral-500 mt-0.5">
+                            {art.source_name} · {formatIndiaDateTime(art.published_at || art.created_at)}
+                            {art.scheduled_at && (
+                              <span className="ml-2 text-[#00652E] font-semibold">
+                                · Scheduled: {formatIndiaDateTime(art.scheduled_at)}
+                              </span>
+                            )}
+                            {Boolean(art.breaking_candidate) && !art.breaking && (
+                              <span className="ml-2 text-amber-600 font-semibold">· Breaking Candidate</span>
+                            )}
+                          </div>
                         </td>
                         <td className="p-3">
                           <div>{art.category_name || '—'}</div>
@@ -896,32 +938,37 @@ export function AdminPage() {
           {/* TAB: EDITIONS */}
           {activeTab === 'editions' && (
             <div className="space-y-6">
-              <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 flex flex-wrap items-end justify-between gap-4">
-                <div className="flex flex-wrap items-end gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">Select Edition Date</label>
-                    <input
-                      type="date"
-                      value={editionDateInput}
-                      onChange={(e) => setEditionDateInput(e.target.value)}
-                      className="px-3 py-2 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
-                    />
+              <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-3">
+                <div className="flex flex-wrap items-end justify-between gap-4">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Select Edition Date (IST)</label>
+                      <input
+                        type="date"
+                        value={editionDateInput}
+                        onChange={(e) => setEditionDateInput(e.target.value)}
+                        className="px-3 py-2 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => generateEdition()}
+                      className="px-4 py-2 rounded bg-[#00652E] text-white text-xs font-semibold hover:bg-[#00451F]"
+                    >
+                      Generate / Regenerate Edition
+                    </button>
                   </div>
                   <button
                     type="button"
-                    onClick={() => generateEdition()}
-                    className="px-4 py-2 rounded bg-[#00652E] text-white text-xs font-semibold hover:bg-[#00451F]"
+                    onClick={() => generateEdition(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()))}
+                    className="px-4 py-2 rounded border border-[#00652E] text-[#00652E] dark:text-[#4ade80] text-xs font-semibold"
                   >
-                    Generate / Regenerate Edition
+                    Generate Today’s Edition
                   </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => generateEdition(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()))}
-                  className="px-4 py-2 rounded border border-[#00652E] text-[#00652E] dark:text-[#4ade80] text-xs font-semibold"
-                >
-                  Generate Today’s Edition
-                </button>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Each E-Paper edition compiles published stories dated on that specific Indian Standard Time (IST) calendar day so every archive date preserves its own headlines.
+                </p>
               </div>
 
               <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg overflow-x-auto">
@@ -968,6 +1015,26 @@ export function AdminPage() {
               </div>
             </div>
           )}
+
+          {/* TAB: EDITORIAL CALENDAR */}
+          {activeTab === 'calendar' && (
+            <AdminCalendarPanel
+              token={adminToken}
+              onEditArticle={(partial) => {
+                const match = articles.find((a) => a.id === partial.id);
+                setEditingArticle(match || partial);
+              }}
+            />
+          )}
+
+          {/* TAB: ADVERTISEMENTS */}
+          {activeTab === 'ads' && <AdminAdsPanel token={adminToken} ads={ads} onRefresh={loadAll} />}
+
+          {/* TAB: COMMENTS, ANALYTICS & WEB PUSH */}
+          {activeTab === 'community' && <AdminCommunityPanel token={adminToken} onRefreshOverview={loadAll} />}
+
+          {/* TAB: SYSTEM HEALTH, CRON, BACKUPS & AUDIT */}
+          {activeTab === 'system' && <AdminSystemPanel token={adminToken} />}
 
           {/* TAB: MIGRATION */}
           {activeTab === 'migration' && <AdminMigrationPanel token={adminToken} onImported={loadAll} />}

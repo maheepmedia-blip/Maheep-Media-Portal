@@ -3,15 +3,25 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from './server/db.ts';
+import { startUnifiedScheduler } from './server/jobs.ts';
 import { registerApiRoutes } from './server/routes.ts';
-import { startRssScheduler } from './server/rss.ts';
 
 async function startServer() {
   initDatabase();
-  startRssScheduler();
+  startUnifiedScheduler();
 
   const app = express();
   app.set('trust proxy', true);
+  app.disable('x-powered-by');
+
+  // Security headers (preserve iframe compatibility for preview environments)
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(), microphone=()');
+    next();
+  });
+
   app.use(express.json({ limit: '6mb' }));
 
   registerApiRoutes(app);
