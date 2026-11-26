@@ -36,7 +36,7 @@ function formatStoryIstTime(iso?: string): string {
 }
 
 export function generateEditionForDate(editionDate: string) {
-  const published = db
+  let published = db
     .prepare(`
       SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
              c.name as category_name, c.slug as category_slug, s.name as state_name
@@ -49,6 +49,31 @@ export function generateEditionForDate(editionDate: string) {
       LIMIT 40
     `)
     .all(editionDate) as Array<Record<string, unknown>>;
+
+  const todayIst = getTodayIndiaDate();
+  if (editionDate === todayIst && published.length < 10) {
+    const existingIds = new Set(published.map((a) => String(a.id)));
+    const recentExtra = db
+      .prepare(`
+        SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
+               c.name as category_name, c.slug as category_slug, s.name as state_name
+        FROM articles a
+        LEFT JOIN categories c ON c.id = a.category_id
+        LEFT JOIN states s ON s.id = a.state_id
+        WHERE a.status = 'published'
+          AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) <= date(?)
+          AND datetime(a.published_at) >= datetime(?, '-2 days')
+        ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC
+        LIMIT 40
+      `)
+      .all(todayIst, `${todayIst}T23:59:59+05:30`) as Array<Record<string, unknown>>;
+    for (const row of recentExtra) {
+      if (!existingIds.has(String(row.id)) && published.length < 40) {
+        published.push(row);
+        existingIds.add(String(row.id));
+      }
+    }
+  }
 
   if (published.length === 0) {
     throw new Error(
