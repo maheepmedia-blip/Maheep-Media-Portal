@@ -162,7 +162,7 @@ export function initDatabase(): void {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       advertiser TEXT NOT NULL DEFAULT '',
-      placement TEXT NOT NULL CHECK (placement IN ('header_banner', 'homepage_mid', 'sidebar', 'article_inline', 'epaper_banner')),
+      placement TEXT NOT NULL CHECK (placement IN ('all_slots', 'header_banner', 'homepage_mid', 'sidebar', 'article_inline', 'epaper_banner')),
       image_url TEXT DEFAULT '',
       target_url TEXT DEFAULT '',
       description TEXT DEFAULT '',
@@ -178,6 +178,13 @@ export function initDatabase(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_ads_placement_active ON ads(placement, active);
+
+    CREATE TABLE IF NOT EXISTS uploaded_media (
+      filename TEXT PRIMARY KEY,
+      mime_type TEXT NOT NULL,
+      data_base64 TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
 
     CREATE TABLE IF NOT EXISTS admin_audit_logs (
       id TEXT PRIMARY KEY,
@@ -570,7 +577,7 @@ function seedInitialData(): void {
   if (settingsCount === 0) {
     const insertSetting = db.prepare('INSERT INTO site_settings (id, setting_key, setting_value) VALUES (?, ?, ?)');
     const defaults: Array<[string, string]> = [
-      ['publishing_mode', 'manual_approval'],
+      ['publishing_mode', 'auto_publish'],
       ['rss_interval_minutes', '30'],
       ['rss_auto_enabled', 'true'],
       ['ai_quality_checks', 'true'],
@@ -1200,6 +1207,52 @@ function seedInitialData(): void {
     setSetting('rss_topic_feeds_v1', 'done');
   }
 
+  // Upgrade existing ads table CHECK constraint to allow 'all_slots' without losing any ads
+  if (getSetting('ads_all_slots_v1', '') !== 'done') {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS ads_new (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        advertiser TEXT NOT NULL DEFAULT '',
+        placement TEXT NOT NULL CHECK (placement IN ('all_slots', 'header_banner', 'homepage_mid', 'sidebar', 'article_inline', 'epaper_banner')),
+        image_url TEXT DEFAULT '',
+        target_url TEXT DEFAULT '',
+        description TEXT DEFAULT '',
+        cta_text TEXT NOT NULL DEFAULT 'Learn More',
+        language TEXT NOT NULL DEFAULT 'all' CHECK (language IN ('all', 'en', 'hi')),
+        active INTEGER NOT NULL DEFAULT 1,
+        start_date TEXT DEFAULT '',
+        end_date TEXT DEFAULT '',
+        impressions INTEGER NOT NULL DEFAULT 0,
+        clicks INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO ads_new SELECT * FROM ads;
+      DROP TABLE ads;
+      ALTER TABLE ads_new RENAME TO ads;
+      CREATE INDEX IF NOT EXISTS idx_ads_placement_active ON ads(placement, active);
+    `);
+    db.pragma('foreign_keys = ON');
+    setSetting('ads_all_slots_v1', 'done');
+  }
+
+  // Default RSS publishing to auto_publish so collected RSS stories immediately appear on Website and E-Paper
+  if (getSetting('rss_autopublish_default_v1', '') !== 'done') {
+    if (getSetting('publishing_mode', 'manual_approval') === 'manual_approval') {
+      setSetting('publishing_mode', 'auto_publish');
+    }
+    db.prepare(`
+      UPDATE articles
+      SET status = 'published',
+          published_at = COALESCE(NULLIF(published_at, ''), created_at, datetime('now')),
+          updated_at = datetime('now')
+      WHERE status = 'pending' AND source_url != ''
+    `).run();
+    setSetting('rss_autopublish_default_v1', 'done');
+  }
+
   const adminCount = (db.prepare('SELECT COUNT(*) as count FROM admin_users').get() as { count: number }).count;
   if (adminCount === 0) {
     db.prepare('INSERT INTO admin_users (id, name, email, role, password_hash, password_salt) VALUES (?, ?, ?, ?, ?, ?)').run(
@@ -1295,6 +1348,153 @@ function seedInitialData(): void {
       'Election Commission of India (Official Archive)',
       'https://results.eci.gov.in',
     );
+  }
+
+  // Content Marketing Guides, Explainers & Video Dispatches table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content_guides (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      guide_type TEXT NOT NULL DEFAULT 'guide' CHECK (guide_type IN ('guide', 'explainer', 'video', 'checklist')),
+      category TEXT NOT NULL DEFAULT 'Citizen Guide',
+      language TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'hi')),
+      summary TEXT NOT NULL,
+      body TEXT NOT NULL,
+      video_url TEXT DEFAULT '',
+      image_url TEXT DEFAULT '',
+      read_minutes INTEGER NOT NULL DEFAULT 5,
+      author TEXT NOT NULL DEFAULT 'Maheep Editorial Desk',
+      published INTEGER NOT NULL DEFAULT 1,
+      views INTEGER NOT NULL DEFAULT 0,
+      shares INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_guides_pub ON content_guides(published, created_at DESC);
+  `);
+
+  // Safe migration: add UTM & CRO attribution columns to analytics_events
+  const anaCols = db.prepare('PRAGMA table_info(analytics_events)').all() as Array<{ name: string }>;
+  const anaColSet = new Set(anaCols.map((c) => c.name));
+  const extraAnaCols = [
+    ['utm_source', "TEXT DEFAULT ''"],
+    ['utm_medium', "TEXT DEFAULT ''"],
+    ['utm_campaign', "TEXT DEFAULT ''"],
+    ['utm_term', "TEXT DEFAULT ''"],
+    ['cta_variant', "TEXT DEFAULT ''"],
+  ] as const;
+  for (const [col, def] of extraAnaCols) {
+    if (!anaColSet.has(col)) {
+      db.exec(`ALTER TABLE analytics_events ADD COLUMN ${col} ${def}`);
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_analytics_utm ON analytics_events(utm_source, utm_campaign)`);
+
+  // Seed default Content Marketing Guides & Video Explainers if empty
+  const guideCount = (db.prepare('SELECT COUNT(*) as count FROM content_guides').get() as { count: number }).count;
+  if (guideCount === 0) {
+    const insGuide = db.prepare(`
+      INSERT INTO content_guides (
+        id, title, slug, guide_type, category, language, summary, body, video_url, image_url, read_minutes, author, published
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `);
+
+    insGuide.run(
+      'guide-fact-check-india',
+      'How to Verify Breaking News & Government Circulars Online in India',
+      'how-to-verify-breaking-news-india-guide',
+      'guide',
+      'Media Literacy',
+      'en',
+      'A practical step-by-step handbook for Indian readers to cross-check official PIB press releases, Gazette notifications, and authentic news sources before forwarding messages.',
+      [
+        'Misinformation spreads fastest during elections, weather alerts, and financial announcements. Before trusting or sharing a forwarded headline or screenshot, follow this 4-step verification checklist used by Maheep News Portal editors.',
+        '1. Check the Primary Official Source: For central schemes, policy orders, or RBI rules, look up pib.gov.in, rbi.org.in, or the concerned ministry portal directly rather than relying on cropped WhatsApp graphics.',
+        '2. Verify Date & Context: Old videos and previous years’ circulars frequently resurface with new captions. Always confirm the IST publication date, location, and exact notification number.',
+        '3. Reverse-Check Visual Claims: Notice odd typography, mismatched logos, or missing reporter attribution. Authentic journalism names its source agency, correspondent, and dateline.',
+        '4. Compare Multi-Source Coverage: Open Maheep News Portal’s AI News Comparison or E-Paper archive to confirm how independent outlets report the same official development.',
+      ].join('\n\n'),
+      '',
+      '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+      6,
+      'Maheep Editorial Desk',
+    );
+
+    insGuide.run(
+      'guide-upsc-epaper-reading',
+      'Daily E-Paper & Current Affairs Strategy for UPSC and State PCS Aspirants',
+      'daily-epaper-current-affairs-upsc-strategy',
+      'explainer',
+      'Education & Careers',
+      'en',
+      'Turn 25 minutes with the daily Maheep Digital Broadsheet into structured GS-II, GS-III, and essay preparation notes across National, Economy, and Science pages.',
+      [
+        'Competitive exam preparation depends on consistency rather than reading hundreds of isolated headlines. A structured daily newspaper routine builds long-term policy understanding.',
+        'Step 1 — Read Front Page & National Policy (10 mins): Focus on parliamentary bills, Supreme Court rulings, federal relations across States & UTs, and constitutional debates.',
+        'Step 2 — Track Economy & Infrastructure (8 mins): Note RBI repo policy commentary, GST revenue trends, manufacturing corridors, and digital public infrastructure milestones.',
+        'Step 3 — Save Key Timelines & Use Article Mode (7 mins): Use Maheep E-Paper’s Article Mode and Bookmark feature to archive multi-month developments cleanly for weekend revision.',
+      ].join('\n\n'),
+      '',
+      '/src/assets/images/tech_isro_innovation_1795494895781.jpg',
+      5,
+      'Dr. Kavita Subramanian',
+    );
+
+    insGuide.run(
+      'guide-cyber-helpline-checklist',
+      'डिजिटल सुरक्षा और साइबर फ्रॉड रिपोर्टिंग गाइड (1930 हेल्पलाइन चेकलिस्ट)',
+      'digital-safety-cyber-fraud-1930-hindi-guide',
+      'checklist',
+      'Citizen Safety',
+      'hi',
+      'ऑनलाइन यूपीआई धोखाधड़ी, फर्जी कॉल या संदिग्ध लिंक से बचने और तुरंत 1930 या cybercrime.gov.in पर शिकायत दर्ज करने की पूरी प्रक्रिया।',
+      [
+        'भारत में डिजिटल भुगतान तेजी से बढ़ा है, इसलिए हर नागरिक के लिए साइबर सुरक्षा के बुनियादी नियम जानना जरूरी है।',
+        '1. किसी भी अनजान लिंक या APK फाइल पर क्लिक न करें और न ही किसी के कहने पर स्क्रीन-शेयरिंग ऐप इंस्टॉल करें।',
+        '2. बैंक या यूपीआई पिन, OTP या KYC अपडेट के नाम पर आने वाली कॉल पर कभी निजी जानकारी साझा न करें।',
+        '3. यदि किसी वित्तीय धोखाधड़ी का शिकार हो जाएं, तो तुरंत राष्ट्रीय साइबर हेल्पलाइन नंबर 1930 पर कॉल करें और cybercrime.gov.in पर ट्रांजैक्शन आईडी के साथ शिकायत दर्ज करें।',
+        '4. गोल्डन ऑवर यानी पहले 60 मिनट के भीतर रिपोर्ट करने से संदिग्ध खाते में राशि फ्रीज होने की संभावना सबसे अधिक रहती है।',
+      ].join('\n\n'),
+      '',
+      '/src/assets/images/business_rbi_markets_1795494881167.jpg',
+      4,
+      'अंजलि शर्मा',
+    );
+
+    insGuide.run(
+      'guide-digital-newsroom-video',
+      'Video Briefing Guide: Inside Maheep News Portal’s 60-Second Audio & E-Paper Reader',
+      'video-guide-maheep-audio-epaper-reader',
+      'video',
+      'Portal Walkthrough',
+      'en',
+      'See how to switch between Broadsheet & Article Mode, listen to Hindi/English audio bulletins, browse all 36 State & UT editions, and install the mobile web app.',
+      [
+        'Maheep News Portal combines traditional A4 newspaper layout with fast mobile accessibility.',
+        'Use the top E-Paper button to read multi-page daily editions with zoom, sepia/dark reading themes, and PDF download.',
+        'Tap States & UTs to explore local journalism from every Indian State and Union Territory, or open AI & Audio for instant 60-second spoken briefings.',
+      ].join('\n\n'),
+      'https://www.youtube.com/embed/dQw4w9WgXcQ',
+      '/src/assets/images/sports_cricket_india_1795494865319.jpg',
+      3,
+      'Maheep Editorial Desk',
+    );
+  }
+
+  // Seed default Growth, SEO, SEM, CRO & Local SEO settings cleanly if absent
+  const defaultGrowthSettings: Array<[string, string]> = [
+    ['local_seo_hq_city', 'New Delhi'],
+    ['local_seo_region', 'IN'],
+    ['cro_sticky_bar_enabled', 'true'],
+    ['cro_cta_headline', 'Get India’s verified morning E-Paper & top dispatches free every morning at 7 AM IST'],
+    ['cro_cta_button', 'Get Free Daily E-Paper'],
+    ['sem_google_ads_id', ''],
+  ];
+  for (const [key, val] of defaultGrowthSettings) {
+    if (!getSetting(key, '')) {
+      setSetting(key, val);
+    }
   }
 }
 
