@@ -53,6 +53,7 @@ import {
   fetchAndParseFeed,
   runAllEnabledRssSources,
   runSingleRssSource,
+  syncDailyEditionsForRecentArticles,
   titleSimilarity,
   validateExternalFeedUrl,
 } from './rss.ts';
@@ -177,6 +178,7 @@ export function registerApiRoutes(app: Express): void {
         'Disallow: /api/',
         '',
         `Sitemap: ${baseUrl}/sitemap.xml`,
+        `Sitemap: ${baseUrl}/sitemap-news.xml`,
       ].join('\n'),
     );
   });
@@ -186,13 +188,44 @@ export function registerApiRoutes(app: Express): void {
     const articles = db
       .prepare("SELECT slug, title, image_url, updated_at FROM articles WHERE status = 'published' ORDER BY published_at DESC LIMIT 500")
       .all() as Array<{ slug: string; title: string; image_url: string; updated_at: string }>;
+    const states = db.prepare('SELECT slug FROM states ORDER BY name ASC').all() as Array<{ slug: string }>;
+    const guides = db
+      .prepare('SELECT slug, title, image_url, updated_at FROM content_guides WHERE published = 1 ORDER BY created_at DESC LIMIT 100')
+      .all() as Array<{ slug: string; title: string; image_url: string; updated_at: string }>;
 
-    const staticRoutes = ['', '/national', '/states', '/business-sports', '/epaper', '/contact', '/search'];
+    const staticRoutes = [
+      '',
+      '/national',
+      '/states',
+      '/business-sports',
+      '/epaper',
+      '/guides',
+      '/briefing',
+      '/timelines',
+      '/authors',
+      '/contact',
+      '/search',
+    ];
     const urls = [
       ...staticRoutes.map(
         (r) =>
           `<url><loc>${baseUrl}${r}</loc><changefreq>hourly</changefreq><priority>${r === '' ? '1.0' : '0.8'}</priority></url>`,
       ),
+      ...states.map(
+        (st) =>
+          `<url><loc>${baseUrl}/states/${encodeURIComponent(st.slug)}</loc><changefreq>daily</changefreq><priority>0.75</priority></url>`,
+      ),
+      ...guides.map((g) => {
+        const imgAbs = g.image_url?.startsWith('http')
+          ? g.image_url
+          : g.image_url
+          ? `${baseUrl}${g.image_url}`
+          : '';
+        const imgTag = imgAbs
+          ? `<image:image><image:loc>${escapeHtml(imgAbs)}</image:loc><image:title>${escapeHtml(g.title)}</image:title></image:image>`
+          : '';
+        return `<url><loc>${baseUrl}/guides/${encodeURIComponent(g.slug)}</loc><lastmod>${new Date(g.updated_at).toISOString()}</lastmod><changefreq>weekly</changefreq><priority>0.85</priority>${imgTag}</url>`;
+      }),
       ...articles.map((a) => {
         const imgAbs = a.image_url?.startsWith('http')
           ? a.image_url
@@ -209,6 +242,39 @@ export function registerApiRoutes(app: Express): void {
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
     res.send(
       `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n${urls.join('\n')}\n</urlset>`,
+    );
+  });
+
+  // Google News Sitemap (last 48 hours of published stories)
+  app.get('/sitemap-news.xml', (req, res) => {
+    const baseUrl = resolvePublicBaseUrl(req);
+    const recent = db
+      .prepare(`
+        SELECT slug, title, language, published_at
+        FROM articles
+        WHERE status = 'published' AND datetime(published_at) >= datetime('now', '-2 days')
+        ORDER BY published_at DESC
+        LIMIT 250
+      `)
+      .all() as Array<{ slug: string; title: string; language: 'en' | 'hi'; published_at: string }>;
+
+    const items = recent.map(
+      (a) => `<url>
+  <loc>${baseUrl}/news/${encodeURIComponent(a.slug)}</loc>
+  <news:news>
+    <news:publication>
+      <news:name>Maheep News Portal</news:name>
+      <news:language>${a.language === 'hi' ? 'hi' : 'en'}</news:language>
+    </news:publication>
+    <news:publication_date>${new Date(a.published_at).toISOString()}</news:publication_date>
+    <news:title>${escapeHtml(a.title)}</news:title>
+  </news:news>
+</url>`,
+    );
+
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.send(
+      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">\n${items.join('\n')}\n</urlset>`,
     );
   });
 
@@ -254,11 +320,11 @@ export function registerApiRoutes(app: Express): void {
     const langParams = lang ? [lang] : [];
 
     const breaking = db
-      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' AND a.breaking = 1${langClause} ORDER BY a.published_at DESC LIMIT 10`)
+      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' AND a.breaking = 1${langClause} ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 10`)
       .all(...langParams);
 
     const featured = db
-      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' AND a.featured = 1${langClause} ORDER BY a.published_at DESC LIMIT 6`)
+      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.featured DESC, a.breaking DESC, a.published_at DESC LIMIT 6`)
       .all(...langParams) as Array<{ id: string }>;
 
     const excludeFeaturedIds = featured.map((a) => a.id);
@@ -268,7 +334,7 @@ export function registerApiRoutes(app: Express): void {
         : '';
 
     const latest = db
-      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause}${notFeaturedClause} ORDER BY a.published_at DESC LIMIT 16`)
+      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause}${notFeaturedClause} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 16`)
       .all(...langParams, ...excludeFeaturedIds) as Array<{ id: string }>;
 
     const trending = db
@@ -277,7 +343,7 @@ export function registerApiRoutes(app: Express): void {
 
     const querySection = (whereExtra: string, limit = 4) =>
       db
-        .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause}${notFeaturedClause} AND (${whereExtra}) ORDER BY a.published_at DESC LIMIT ?`)
+        .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause}${notFeaturedClause} AND (${whereExtra}) ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT ?`)
         .all(...langParams, ...excludeFeaturedIds, limit);
 
     const sections = {
@@ -364,7 +430,9 @@ export function registerApiRoutes(app: Express): void {
 
     const whereSql = conditions.join(' AND ');
     const items = db
-      .prepare(`${ARTICLE_SELECT} WHERE ${whereSql} ORDER BY a.published_at DESC LIMIT ? OFFSET ?`)
+      .prepare(
+        `${ARTICLE_SELECT} WHERE ${whereSql} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT ? OFFSET ?`,
+      )
       .all(...params, limit, offset);
 
     const totalRow = db
@@ -676,12 +744,91 @@ export function registerApiRoutes(app: Express): void {
     const articleId = String(req.body?.article_id || '').slice(0, 40);
     const categorySlug = String(req.body?.category_slug || '').slice(0, 40);
     const language = req.body?.language === 'hi' || req.body?.language === 'en' ? req.body.language : 'all';
+    const utmSource = String(req.body?.utm_source || '').trim().slice(0, 80);
+    const utmMedium = String(req.body?.utm_medium || '').trim().slice(0, 80);
+    const utmCampaign = String(req.body?.utm_campaign || '').trim().slice(0, 100);
+    const utmTerm = String(req.body?.utm_term || '').trim().slice(0, 120);
+    const ctaVariant = String(req.body?.cta_variant || '').trim().slice(0, 60);
 
     db.prepare(`
-      INSERT INTO analytics_events (id, event_type, path, article_id, category_slug, language)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(`ana-${crypto.randomUUID().slice(0, 10)}`, eventType, pagePath, articleId, categorySlug, language);
+      INSERT INTO analytics_events (
+        id, event_type, path, article_id, category_slug, language,
+        utm_source, utm_medium, utm_campaign, utm_term, cta_variant
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `ana-${crypto.randomUUID().slice(0, 10)}`,
+      eventType,
+      pagePath,
+      articleId,
+      categorySlug,
+      language,
+      utmSource,
+      utmMedium,
+      utmCampaign,
+      utmTerm,
+      ctaVariant,
+    );
 
+    res.json({ ok: true });
+  });
+
+  // Public Growth Config (CRO banner, Local SEO location)
+  app.get('/api/growth/config', (_req, res) => {
+    res.json({
+      cro_sticky_bar_enabled: getSetting('cro_sticky_bar_enabled', 'true') !== 'false',
+      cro_cta_headline: getSetting(
+        'cro_cta_headline',
+        'Get India’s verified morning E-Paper & top dispatches free every morning at 7 AM IST',
+      ),
+      cro_cta_button: getSetting('cro_cta_button', 'Get Free Daily E-Paper'),
+      local_seo_hq_city: getSetting('local_seo_hq_city', 'New Delhi'),
+      local_seo_region: getSetting('local_seo_region', 'IN'),
+    });
+  });
+
+  // Content Marketing Public Guides, Explainers & Video Dispatches
+  app.get('/api/guides', (req, res) => {
+    const type = String(req.query.type || 'all').trim();
+    const lang = req.query.language === 'en' || req.query.language === 'hi' ? req.query.language : 'all';
+    const q = String(req.query.q || '').trim();
+
+    const conditions = ['published = 1'];
+    const params: unknown[] = [];
+
+    if (['guide', 'explainer', 'video', 'checklist'].includes(type)) {
+      conditions.push('guide_type = ?');
+      params.push(type);
+    }
+    if (lang !== 'all') {
+      conditions.push('language = ?');
+      params.push(lang);
+    }
+    if (q) {
+      conditions.push('(title LIKE ? OR summary LIKE ? OR category LIKE ?)');
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    }
+
+    const guides = db
+      .prepare(`SELECT * FROM content_guides WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT 60`)
+      .all(...params);
+    res.json({ guides });
+  });
+
+  app.get('/api/guides/:slug', (req, res) => {
+    const slug = String(req.params.slug || '').trim();
+    const guide = db.prepare('SELECT * FROM content_guides WHERE slug = ? AND published = 1').get(slug);
+    if (!guide) {
+      res.status(404).json({ error: 'Guide not found.' });
+      return;
+    }
+    db.prepare('UPDATE content_guides SET views = views + 1 WHERE slug = ?').run(slug);
+    res.json({ guide: db.prepare('SELECT * FROM content_guides WHERE slug = ?').get(slug) });
+  });
+
+  app.post('/api/guides/:slug/share', (req, res) => {
+    const slug = String(req.params.slug || '').trim();
+    db.prepare('UPDATE content_guides SET shares = shares + 1 WHERE slug = ?').run(slug);
     res.json({ ok: true });
   });
 
@@ -1428,15 +1575,30 @@ export function registerApiRoutes(app: Express): void {
     res.json({ ok: true });
   });
 
-  // Safe uploaded image serving with strict path confinement
+  // Safe uploaded image serving with strict path confinement and DB media fallback
   app.get('/uploads/:filename', (req, res) => {
     const cleanName = path.basename(String(req.params.filename || ''));
     const resolved = path.resolve(uploadsDir, cleanName);
-    if (!resolved.startsWith(uploadsDir + path.sep) || !fs.existsSync(resolved)) {
-      res.status(404).end();
+    if (resolved.startsWith(uploadsDir + path.sep) && fs.existsSync(resolved)) {
+      res.sendFile(resolved);
       return;
     }
-    res.sendFile(resolved);
+    const stored = db
+      .prepare('SELECT mime_type, data_base64 FROM uploaded_media WHERE filename = ?')
+      .get(cleanName) as { mime_type: string; data_base64: string } | undefined;
+    if (stored) {
+      const buf = Buffer.from(stored.data_base64, 'base64');
+      try {
+        if (resolved.startsWith(uploadsDir + path.sep)) fs.writeFileSync(resolved, buf);
+      } catch {
+        // Ignore read-only disk recreate failure
+      }
+      res.setHeader('Content-Type', stored.mime_type);
+      res.setHeader('Cache-Control', 'public, max-age=604800');
+      res.send(buf);
+      return;
+    }
+    res.status(404).end();
   });
 
   // ---------------- ADMIN AUTH ----------------
@@ -1605,7 +1767,7 @@ export function registerApiRoutes(app: Express): void {
         lastRunAt: getSetting('rss_last_run_at', ''),
         nextRunAt: getSetting('rss_next_run_at', ''),
         intervalMinutes: Number(getSetting('rss_interval_minutes', '30')),
-        publishingMode: getSetting('publishing_mode', 'manual_approval'),
+        publishingMode: getSetting('publishing_mode', 'auto_publish'),
       },
     });
   });
@@ -1776,6 +1938,7 @@ export function registerApiRoutes(app: Express): void {
     );
 
     recordAdminAudit({ req, action: 'article_create', targetType: 'article', targetId: id, details: { status, scheduledAt } });
+    if (status === 'published') syncDailyEditionsForRecentArticles();
     const created = db.prepare(`${ARTICLE_SELECT} WHERE a.id = ?`).get(id);
     res.status(201).json({ article: created });
   });
@@ -1867,6 +2030,7 @@ export function registerApiRoutes(app: Express): void {
     );
 
     recordAdminAudit({ req, action: 'article_update', targetType: 'article', targetId: id, details: { status: nextStatus } });
+    if (nextStatus === 'published' || existing.status === 'published') syncDailyEditionsForRecentArticles();
     const updated = db.prepare(`${ARTICLE_SELECT} WHERE a.id = ?`).get(id);
     res.json({ article: updated });
   });
@@ -1936,6 +2100,9 @@ export function registerApiRoutes(app: Express): void {
       }
     });
     tx(ids);
+    if (action === 'publish' || action === 'unpublish' || action === 'delete') {
+      syncDailyEditionsForRecentArticles();
+    }
     recordAdminAudit({ req, action: `article_bulk_${action}`, targetType: 'article', details: { count: ids.length } });
     res.json({ ok: true, affected: ids.length });
   });
@@ -1947,6 +2114,7 @@ export function registerApiRoutes(app: Express): void {
       res.status(400).json({ error: 'Invalid image format. Allowed: PNG, JPG, WEBP.' });
       return;
     }
+    const mimeType = `image/${match[1] === 'jpg' ? 'jpeg' : match[1]}`;
     const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
     const buffer = Buffer.from(match[2], 'base64');
     if (buffer.length > 3 * 1024 * 1024) {
@@ -1960,6 +2128,11 @@ export function registerApiRoutes(app: Express): void {
       return;
     }
     fs.writeFileSync(dest, buffer);
+    db.prepare('INSERT OR REPLACE INTO uploaded_media (filename, mime_type, data_base64) VALUES (?, ?, ?)').run(
+      filename,
+      mimeType,
+      match[2],
+    );
     res.json({ url: `/uploads/${filename}` });
   });
 
@@ -2078,8 +2251,10 @@ export function registerApiRoutes(app: Express): void {
   });
 
   app.post('/api/admin/rss/run', requireAdmin, async (_req, res) => {
+    const mode = getSetting('publishing_mode', 'auto_publish');
     const results = await runAllEnabledRssSources();
-    res.json({ ok: true, results });
+    const totalImported = results.reduce((acc, r) => acc + r.imported, 0);
+    res.json({ ok: true, results, totalImported, publishingMode: mode });
   });
 
   app.post('/api/admin/rss/:id/run', requireAdmin, async (req, res) => {
@@ -2173,9 +2348,14 @@ export function registerApiRoutes(app: Express): void {
       return;
     }
 
-    const id = `ad-${crypto.randomUUID().slice(0, 10)}`;
+    const requestedId = String(req.body?.id || '').trim();
+    const id =
+      requestedId && /^[a-zA-Z0-9_-]{3,128}$/.test(requestedId)
+        ? requestedId
+        : `ad-${crypto.randomUUID().slice(0, 10)}`;
+
     db.prepare(`
-      INSERT INTO ads (
+      INSERT OR REPLACE INTO ads (
         id, title, advertiser, placement, image_url, target_url, description,
         cta_text, language, active, start_date, end_date
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2183,6 +2363,78 @@ export function registerApiRoutes(app: Express): void {
 
     recordAdminAudit({ req, action: 'ad_create', targetType: 'ad', targetId: id, details: { title, placement } });
     res.status(201).json({ ad: db.prepare('SELECT * FROM ads WHERE id = ?').get(id) });
+  });
+
+  app.post('/api/admin/ads/sync', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const incomingAds = Array.isArray(req.body?.ads) ? req.body.ads : [];
+    let synced = 0;
+
+    const upsert = db.prepare(`
+      INSERT INTO ads (
+        id, title, advertiser, placement, image_url, target_url, description,
+        cta_text, language, active, start_date, end_date, impressions, clicks
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        advertiser = excluded.advertiser,
+        placement = excluded.placement,
+        image_url = excluded.image_url,
+        target_url = excluded.target_url,
+        description = excluded.description,
+        cta_text = excluded.cta_text,
+        language = excluded.language,
+        active = excluded.active,
+        start_date = excluded.start_date,
+        end_date = excluded.end_date,
+        updated_at = datetime('now')
+    `);
+
+    const tx = db.transaction((items: Record<string, unknown>[]) => {
+      for (const item of items.slice(0, 100)) {
+        const id = String(item?.id || '').trim();
+        const title = String(item?.title || '').trim().slice(0, 200);
+        const placement = String(item?.placement || 'all_slots').trim();
+        if (!id || !/^[a-zA-Z0-9_-]{3,128}$/.test(id) || !title) continue;
+        if (!(VALID_AD_PLACEMENTS as readonly string[]).includes(placement)) continue;
+
+        const advertiser = String(item?.advertiser || '').trim().slice(0, 120);
+        const imageUrl = sanitizeSafeUrl(item?.image_url);
+        const targetUrl = sanitizeAdTargetUrl(item?.target_url);
+        const description = String(item?.description || '').trim().slice(0, 400);
+        const ctaText = String(item?.cta_text || 'Learn More').trim().slice(0, 60) || 'Learn More';
+        const language = item?.language === 'en' || item?.language === 'hi' ? item.language : 'all';
+        const active = item?.active === false || item?.active === 0 ? 0 : 1;
+        const startDate = /^\d{4}-\d{2}-\d{2}$/.test(String(item?.start_date || '').trim())
+          ? String(item.start_date).trim()
+          : '';
+        const endDate = /^\d{4}-\d{2}-\d{2}$/.test(String(item?.end_date || '').trim())
+          ? String(item.end_date).trim()
+          : '';
+        const impressions = Math.max(0, Number(item?.impressions || 0) || 0);
+        const clicks = Math.max(0, Number(item?.clicks || 0) || 0);
+
+        upsert.run(
+          id,
+          title,
+          advertiser,
+          placement,
+          imageUrl,
+          targetUrl,
+          description,
+          ctaText,
+          language,
+          active,
+          startDate,
+          endDate,
+          impressions,
+          clicks,
+        );
+        synced += 1;
+      }
+    });
+
+    tx(incomingAds);
+    res.json({ ok: true, synced, ads: db.prepare('SELECT * FROM ads ORDER BY created_at DESC').all() });
   });
 
   app.patch('/api/admin/ads/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
@@ -2565,6 +2817,197 @@ export function registerApiRoutes(app: Express): void {
         .map((r) => [r.setting_key, r.setting_value]),
     );
     res.json({ settings });
+  });
+
+  app.patch('/api/admin/growth-settings', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const allowedKeys = [
+      'local_seo_hq_city',
+      'local_seo_region',
+      'cro_sticky_bar_enabled',
+      'cro_cta_headline',
+      'cro_cta_button',
+      'sem_google_ads_id',
+    ];
+    for (const key of allowedKeys) {
+      if (req.body?.[key] !== undefined) {
+        setSetting(key, String(req.body[key]).trim().slice(0, 4000));
+      }
+    }
+    recordAdminAudit({ req, action: 'growth_settings_update', targetType: 'settings', targetId: 'growth' });
+    res.json({ ok: true });
+  });
+
+  app.get('/api/admin/growth-stats', requireAdmin, (_req, res) => {
+    const funnelRows = db
+      .prepare(`
+        SELECT event_type, COUNT(*) as count
+        FROM analytics_events
+        WHERE datetime(created_at) >= datetime('now', '-30 days')
+        GROUP BY event_type
+      `)
+      .all() as Array<{ event_type: string; count: number }>;
+
+    const funnelMap = Object.fromEntries(funnelRows.map((r) => [r.event_type, r.count]));
+    const pageViews = Number(funnelMap.page_view || 0);
+    const articleReads = Number(funnelMap.article_view || 0);
+    const epaperOpens = Number(funnelMap.epaper_open || 0);
+    const conversions =
+      Number(funnelMap.newsletter_signup || 0) +
+      Number(funnelMap.reader_signup || 0) +
+      Number(funnelMap.pwa_install || 0) +
+      Number(funnelMap.ad_click || 0);
+
+    const utmCampaigns = db
+      .prepare(`
+        SELECT
+          COALESCE(NULLIF(utm_source, ''), 'direct / organic') as utm_source,
+          COALESCE(NULLIF(utm_medium, ''), 'none') as utm_medium,
+          COALESCE(NULLIF(utm_campaign, ''), 'portal_general') as utm_campaign,
+          COUNT(*) as events,
+          SUM(CASE WHEN event_type IN ('newsletter_signup', 'reader_signup', 'pwa_install', 'ad_click') THEN 1 ELSE 0 END) as conversions
+        FROM analytics_events
+        WHERE datetime(created_at) >= datetime('now', '-30 days')
+        GROUP BY utm_source, utm_medium, utm_campaign
+        ORDER BY events DESC
+        LIMIT 20
+      `)
+      .all();
+
+    const totalPublished = (
+      db.prepare("SELECT COUNT(*) as count FROM articles WHERE status = 'published'").get() as { count: number }
+    ).count;
+    const missingImages = (
+      db.prepare("SELECT COUNT(*) as count FROM articles WHERE status = 'published' AND TRIM(image_url) = ''").get() as {
+        count: number;
+      }
+    ).count;
+    const shortSummaries = (
+      db
+        .prepare("SELECT COUNT(*) as count FROM articles WHERE status = 'published' AND LENGTH(TRIM(summary)) < 50")
+        .get() as { count: number }
+    ).count;
+    const news48hCount = (
+      db
+        .prepare(
+          "SELECT COUNT(*) as count FROM articles WHERE status = 'published' AND datetime(published_at) >= datetime('now', '-2 days')",
+        )
+        .get() as { count: number }
+    ).count;
+    const statesCovered = (
+      db
+        .prepare(
+          "SELECT COUNT(DISTINCT state_id) as count FROM articles WHERE status = 'published' AND state_id IS NOT NULL AND state_id != ''",
+        )
+        .get() as { count: number }
+    ).count;
+    const guidesCount = (
+      db.prepare('SELECT COUNT(*) as count FROM content_guides WHERE published = 1').get() as { count: number }
+    ).count;
+
+    res.json({
+      funnel: {
+        pageViews,
+        articleReads,
+        epaperOpens,
+        newsletterSignups: Number(funnelMap.newsletter_signup || 0),
+        readerSignups: Number(funnelMap.reader_signup || 0),
+        shareClicks: Number(funnelMap.share_click || 0),
+        pwaInstalls: Number(funnelMap.pwa_install || 0),
+        adClicks: Number(funnelMap.ad_click || 0),
+        conversions,
+        conversionRate: pageViews > 0 ? Number(((conversions / pageViews) * 100).toFixed(2)) : 0,
+      },
+      utmCampaigns,
+      seoHealth: {
+        totalPublished,
+        missingImages,
+        shortSummaries,
+        news48hCount,
+        statesCovered,
+        totalStates: 36,
+        guidesCount,
+      },
+    });
+  });
+
+  // Admin Content Marketing Guides CRUD
+  app.get('/api/admin/guides', requireAdmin, (_req, res) => {
+    const guides = db.prepare('SELECT * FROM content_guides ORDER BY created_at DESC LIMIT 100').all();
+    res.json({ guides });
+  });
+
+  app.post('/api/admin/guides', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const title = String(req.body?.title || '').trim();
+    const summary = String(req.body?.summary || '').trim();
+    const body = String(req.body?.body || '').trim();
+    const guideType = ['guide', 'explainer', 'video', 'checklist'].includes(String(req.body?.guide_type))
+      ? String(req.body.guide_type)
+      : 'guide';
+    const category = String(req.body?.category || 'Citizen Guide').trim().slice(0, 60);
+    const language = req.body?.language === 'hi' ? 'hi' : 'en';
+    const videoUrl = sanitizeSafeUrl(req.body?.video_url);
+    const imageUrl = sanitizeSafeUrl(req.body?.image_url);
+    const readMinutes = Math.max(1, Math.min(60, Number(req.body?.read_minutes || 5) || 5));
+    const author = String(req.body?.author || 'Maheep Editorial Desk').trim().slice(0, 80);
+    const published = req.body?.published === false || req.body?.published === 0 ? 0 : 1;
+
+    if (!title || !summary || !body) {
+      res.status(400).json({ error: 'Title, summary, and guide content are required.' });
+      return;
+    }
+
+    const id = `guide-${crypto.randomUUID().slice(0, 8)}`;
+    const slug = `${createSlug(title)}-${id.slice(-4)}`;
+    db.prepare(`
+      INSERT INTO content_guides (
+        id, title, slug, guide_type, category, language, summary, body,
+        video_url, image_url, read_minutes, author, published
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, title, slug, guideType, category, language, summary, body, videoUrl, imageUrl, readMinutes, author, published);
+
+    recordAdminAudit({ req, action: 'guide_create', targetType: 'guide', targetId: id, details: { title, guideType } });
+    res.status(201).json({ guide: db.prepare('SELECT * FROM content_guides WHERE id = ?').get(id) });
+  });
+
+  app.patch('/api/admin/guides/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '').trim();
+    const existing = db.prepare('SELECT * FROM content_guides WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Guide not found.' });
+      return;
+    }
+    db.prepare(`
+      UPDATE content_guides
+      SET title = ?, guide_type = ?, category = ?, language = ?, summary = ?, body = ?,
+          video_url = ?, image_url = ?, read_minutes = ?, author = ?, published = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      req.body?.title !== undefined ? String(req.body.title).trim() : existing.title,
+      ['guide', 'explainer', 'video', 'checklist'].includes(String(req.body?.guide_type))
+        ? String(req.body.guide_type)
+        : existing.guide_type,
+      req.body?.category !== undefined ? String(req.body.category).trim() : existing.category,
+      req.body?.language === 'hi' || req.body?.language === 'en' ? req.body.language : existing.language,
+      req.body?.summary !== undefined ? String(req.body.summary).trim() : existing.summary,
+      req.body?.body !== undefined ? String(req.body.body).trim() : existing.body,
+      req.body?.video_url !== undefined ? sanitizeSafeUrl(req.body.video_url) : existing.video_url,
+      req.body?.image_url !== undefined ? sanitizeSafeUrl(req.body.image_url) : existing.image_url,
+      req.body?.read_minutes !== undefined ? Math.max(1, Number(req.body.read_minutes) || 5) : existing.read_minutes,
+      req.body?.author !== undefined ? String(req.body.author).trim() : existing.author,
+      req.body?.published !== undefined ? (req.body.published ? 1 : 0) : existing.published,
+      id,
+    );
+    recordAdminAudit({ req, action: 'guide_update', targetType: 'guide', targetId: id });
+    res.json({ guide: db.prepare('SELECT * FROM content_guides WHERE id = ?').get(id) });
+  });
+
+  app.delete('/api/admin/guides/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const id = String(req.params.id || '').trim();
+    db.prepare('DELETE FROM content_guides WHERE id = ?').run(id);
+    recordAdminAudit({ req, action: 'guide_delete', targetType: 'guide', targetId: id });
+    res.json({ ok: true });
   });
 
   // ---------------- JOURNALISTS, SOCIAL QUEUE & NEWSLETTER CAMPAIGNS ----------------
