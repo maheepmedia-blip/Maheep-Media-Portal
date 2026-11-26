@@ -103,6 +103,21 @@ function stripHtml(raw: string): string {
     .trim();
 }
 
+function stripHtmlPreserveParagraphs(raw: string): string {
+  return raw
+    .replace(/<\/(p|div|li|h[1-6]|blockquote)>/gi, '\n\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function detectBreakingCandidate(title: string, summary: string): boolean {
   const combined = `${title} ${summary}`.toLowerCase();
   const urgentSignals = [
@@ -173,6 +188,7 @@ interface ParsedFeedItem {
   title: string;
   link: string;
   summary: string;
+  fullContent: string;
   publishedAt: string;
   sourceName: string;
 }
@@ -215,7 +231,16 @@ export async function fetchAndParseFeed(feedUrl: string, defaultSourceName: stri
       (typeof item.description === 'object' ? item.description['#text'] : item.description) ||
       (typeof item.summary === 'object' ? item.summary['#text'] : item.summary) ||
       title;
+    const rawEncoded =
+      (typeof item['content:encoded'] === 'object' ? item['content:encoded']['#text'] : item['content:encoded']) ||
+      (typeof item.content === 'object' ? item.content['#text'] : item.content) ||
+      (typeof item['media:description'] === 'object'
+        ? item['media:description']['#text']
+        : item['media:description']) ||
+      '';
     const summary = stripHtml(String(rawDesc || '')).slice(0, 300);
+    const fullBodyCandidate = stripHtmlPreserveParagraphs(String(rawEncoded || rawDesc || '')).slice(0, 6000);
+    const fullContent = fullBodyCandidate.length > summary.length ? fullBodyCandidate : summary;
 
     const rawDate = item.pubDate || item.published || item.updated || item['dc:date'];
     let publishedAt = new Date().toISOString();
@@ -234,6 +259,7 @@ export async function fetchAndParseFeed(feedUrl: string, defaultSourceName: stri
         title,
         link: normalizeArticleUrl(link),
         summary: summary || title,
+        fullContent: fullContent || summary || title,
         publishedAt,
         sourceName: String(itemSource).trim() || defaultSourceName,
       });
@@ -258,7 +284,7 @@ export async function runSingleRssSource(sourceId: string) {
     throw new Error('RSS source not found.');
   }
 
-  const mode = getSetting('publishing_mode', 'manual_approval');
+  const mode = getSetting('publishing_mode', 'auto_publish');
   const recentTitles = (
     db.prepare('SELECT title FROM articles ORDER BY created_at DESC LIMIT 80').all() as Array<{ title: string }>
   ).map((r) => r.title);
@@ -324,7 +350,10 @@ export async function runSingleRssSource(sourceId: string) {
         }
 
         const articleId = `art-${crypto.randomUUID().slice(0, 10)}`;
-        const contentBody = `${item.summary}\n\nSource Dispatch: ${item.sourceName}. Read the complete original report via the publisher attribution link below.`;
+        const contentBody =
+          item.fullContent.length > item.summary.length + 40
+            ? `${item.fullContent}\n\nSource Dispatch: ${item.sourceName}. Read the original publisher dispatch via the attribution link below.`
+            : `${item.summary}\n\nSource Dispatch: ${item.sourceName}. Read the complete original report via the publisher attribution link below.`;
 
         db.prepare(`
           INSERT INTO articles (
@@ -387,7 +416,23 @@ export async function runSingleRssSource(sourceId: string) {
     errorMsg || `Imported ${imported}, skipped ${skipped} duplicates`,
   );
 
+  if (imported > 0) {
+    demoteSeedArticlesIfLiveNewsExists();
+    syncDailyEditionsForRecentArticles();
+  }
+
   return { sourceId: source.id, name: source.name, status: logStatus, imported, skipped, failed, error: errorMsg };
+}
+
+export function demoteSeedArticlesIfLiveNewsExists(): void {
+  const liveCount = (
+    db.prepare("SELECT COUNT(*) as c FROM articles WHERE status = 'published' AND source_url != ''").get() as {
+      c: number;
+    }
+  ).c;
+  if (liveCount >= 6) {
+    db.prepare("UPDATE articles SET featured = 0, breaking = 0 WHERE source_url = '' AND length(id) <= 6 AND id LIKE 'art-%'").run();
+  }
 }
 
 export async function retryFailedRssSources() {
@@ -398,6 +443,7 @@ export async function retryFailedRssSources() {
   for (const s of failedSources) {
     results.push(await runSingleRssSource(s.id));
   }
+  demoteSeedArticlesIfLiveNewsExists();
   syncDailyEditionsForRecentArticles();
   return results;
 }
@@ -409,14 +455,23 @@ export function syncDailyEditionsForRecentArticles(): void {
       FROM articles
       WHERE status = 'published' AND published_at IS NOT NULL
       ORDER BY ist_date DESC
-      LIMIT 7
+      LIMIT 10
     `)
     .all() as Array<{ ist_date: string }>;
 
-  for (const row of activeDates) {
-    if (!row.ist_date) continue;
+  const todayIst = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+
+  const dateSet = new Set(activeDates.map((r) => r.ist_date).filter(Boolean));
+  dateSet.add(todayIst);
+
+  for (const dateStr of dateSet) {
     try {
-      generateEditionForDate(row.ist_date);
+      generateEditionForDate(dateStr);
     } catch {
       // Skip dates without published stories
     }
@@ -430,6 +485,7 @@ export async function runAllEnabledRssSources() {
     const res = await runSingleRssSource(s.id);
     results.push(res);
   }
+  demoteSeedArticlesIfLiveNewsExists();
   syncDailyEditionsForRecentArticles();
   const nowIso = new Date().toISOString();
   const intervalMin = Math.max(15, Number(getSetting('rss_interval_minutes', '30')) || 30);
