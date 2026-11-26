@@ -20,6 +20,7 @@ import {
   Settings,
   Sliders,
   Trash2,
+  TrendingUp,
   Users,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -29,10 +30,14 @@ import { AdminArticleModal } from '../components/admin/AdminArticleModal.tsx';
 import { AdminAuthGate } from '../components/admin/AdminAuthGate.tsx';
 import { AdminCalendarPanel } from '../components/admin/AdminCalendarPanel.tsx';
 import { AdminCommunityPanel } from '../components/admin/AdminCommunityPanel.tsx';
+import { AdminGrowthPanel } from '../components/admin/AdminGrowthPanel.tsx';
 import { AdminMigrationPanel } from '../components/admin/AdminMigrationPanel.tsx';
+import { onAuthStateChanged } from 'firebase/auth';
 import { AdminSystemPanel } from '../components/admin/AdminSystemPanel.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
+import { BOOTSTRAP_ADMIN_EMAIL, auth } from '../firebase.ts';
+import { fetchAllAdsFromFirestore } from '../services/adsFirestore.ts';
 import type {
   AdminUser,
   Advertisement,
@@ -56,6 +61,7 @@ type AdminTab =
   | 'publishing'
   | 'editions'
   | 'ads'
+  | 'growth'
   | 'community'
   | 'system'
   | 'migration'
@@ -215,6 +221,26 @@ export function AdminPage() {
     loadAll();
   }, [loadAll]);
 
+  useEffect(() => {
+    if (!adminToken) return;
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user && user.emailVerified && user.email === BOOTSTRAP_ADMIN_EMAIL) {
+        fetchAllAdsFromFirestore()
+          .then((cloudList) => {
+            if (cloudList.length === 0) return;
+            return authFetch('/api/admin/ads/sync', {
+              method: 'POST',
+              body: JSON.stringify({ ads: cloudList }),
+            }).then((r) => {
+              if (r.ok) return loadAll();
+            });
+          })
+          .catch(() => {});
+      }
+    });
+    return () => unsub();
+  }, [adminToken, authFetch, loadAll]);
+
   if (!adminToken || !adminUser) {
     return <AdminAuthGate />;
   }
@@ -265,7 +291,11 @@ export function AdminPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'RSS run failed');
       const totalImp = (json.results || []).reduce((acc: number, r: { imported: number }) => acc + r.imported, 0);
-      flash(`RSS collection complete. Imported ${totalImp} new dispatches.`);
+      const modeLabel =
+        json.publishingMode === 'manual_approval'
+          ? 'Queued in Pending Review (approve them or switch to Automatic Publishing to show on Website & E-Paper).'
+          : 'Published to Website & synced into today’s E-Paper.';
+      flash(`RSS collection complete. Imported ${totalImp} new dispatches. ${modeLabel}`);
       loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'RSS run failed');
@@ -378,6 +408,7 @@ export function AdminPage() {
     { id: 'publishing', label: 'Publishing & AI', icon: Sliders },
     { id: 'editions', label: 'E-Paper Editions', icon: BookOpen },
     { id: 'ads', label: 'Advertisements', icon: Megaphone },
+    { id: 'growth', label: 'Growth, SEO & SEM', icon: TrendingUp },
     { id: 'community', label: 'Comments & Analytics', icon: BarChart3 },
     { id: 'system', label: 'System, Backups & Cron', icon: Activity },
     { id: 'migration', label: 'Sheets Migration', icon: FileSpreadsheet },
@@ -1066,7 +1097,7 @@ export function AdminPage() {
                           </a>
                           <button
                             type="button"
-                            onClick={() => downloadEditionPdf(ed)}
+                            onClick={() => downloadEditionPdf(ed, ads.filter((a) => Boolean(a.active)))}
                             className="inline-flex items-center gap-1 text-neutral-700 dark:text-neutral-200 font-semibold underline"
                           >
                             <Download className="w-3 h-3" /> PDF
@@ -1536,6 +1567,10 @@ export function AdminPage() {
                 </div>
               )}
             </div>
+          )}
+
+          {activeTab === 'growth' && (
+            <AdminGrowthPanel token={adminToken} settings={settings} onRefresh={loadAll} />
           )}
         </div>
       </div>

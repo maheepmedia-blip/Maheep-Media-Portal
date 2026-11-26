@@ -22,6 +22,7 @@ import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
 import type { Article, CommentItem } from '../types/news.ts';
 import { formatIndiaDateTime } from '../utils/date.ts';
+import { buildShareUrl, trackGrowthEvent } from '../utils/utm.ts';
 
 type ReaderAiMode = 'summary' | 'explain' | 'student' | 'points' | 'translate' | 'compare' | 'qa';
 
@@ -241,11 +242,29 @@ export function ArticleDetailPage() {
     setSpeaking(true);
   };
 
+  const [readProgress, setReadProgress] = useState(0);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+      if (docHeight <= 0) {
+        setReadProgress(0);
+        return;
+      }
+      setReadProgress(Math.min(100, Math.max(0, Math.round((window.scrollY / docHeight) * 100))));
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  const sharePath = article ? `/news/${article.slug}` : typeof window !== 'undefined' ? window.location.pathname : '/';
   const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
 
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(shareUrl);
+      const tagged = buildShareUrl(sharePath, 'copy_link', 'article_share');
+      await navigator.clipboard.writeText(tagged);
+      trackGrowthEvent('share_click', { article_id: article?.id, cta_variant: 'copy_link' });
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -290,6 +309,14 @@ export function ArticleDetailPage() {
 
   return (
     <PublicLayout>
+      {/* UXO Reading Progress Indicator */}
+      <div className="fixed top-0 left-0 right-0 h-1 z-50 bg-transparent pointer-events-none no-print">
+        <div
+          className="h-full bg-[#00652E] dark:bg-[#4ade80] transition-all duration-150"
+          style={{ width: `${readProgress}%` }}
+        />
+      </div>
+
       {article && (
         <SeoHead
           title={`${article.title} — Maheep News Portal`}
@@ -297,6 +324,11 @@ export function ArticleDetailPage() {
           canonicalPath={`/news/${article.slug}`}
           ogType="article"
           ogImage={article.image_url || undefined}
+          ogLocale={article.language === 'hi' ? 'hi_IN' : 'en_IN'}
+          publishedTime={article.published_at}
+          modifiedTime={article.updated_at}
+          section={article.category_name || 'News'}
+          geoPlacename={article.state_name ? `${article.state_name}, India` : 'India'}
           breadcrumbs={[
             { name: 'Home', path: '/' },
             { name: article.category_name || 'News', path: `/search?category=${article.category_slug || 'national'}` },
@@ -309,6 +341,7 @@ export function ArticleDetailPage() {
             description: article.summary,
             datePublished: article.published_at,
             dateModified: article.updated_at,
+            inLanguage: article.language === 'hi' ? 'hi-IN' : 'en-IN',
             author: { '@type': 'Person', name: article.author },
             publisher: { '@type': 'Organization', name: 'Maheep News Portal' },
           }}
@@ -475,33 +508,46 @@ export function ArticleDetailPage() {
                     {copied ? 'Copied' : 'Copy'}
                   </button>
                   <a
-                    href={`https://api.whatsapp.com/send?text=${encodeURIComponent(`${article.title} ${shareUrl}`)}`}
+                    href={`https://api.whatsapp.com/send?text=${encodeURIComponent(`${article.title} ${buildShareUrl(sharePath, 'whatsapp', 'article_share')}`)}`}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={() => trackGrowthEvent('share_click', { article_id: article.id, cta_variant: 'whatsapp' })}
                     className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]"
                   >
                     WhatsApp
                   </a>
                   <a
-                    href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(article.title)}&url=${encodeURIComponent(shareUrl)}`}
+                    href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(article.title)}&url=${encodeURIComponent(buildShareUrl(sharePath, 'x', 'article_share'))}`}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={() => trackGrowthEvent('share_click', { article_id: article.id, cta_variant: 'x' })}
                     className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]"
                   >
                     X
                   </a>
                   <a
-                    href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`}
+                    href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(buildShareUrl(sharePath, 'facebook', 'article_share'))}`}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={() => trackGrowthEvent('share_click', { article_id: article.id, cta_variant: 'facebook' })}
                     className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]"
                   >
                     Facebook
                   </a>
                   <a
-                    href={`https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(article.title)}`}
+                    href={`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(buildShareUrl(sharePath, 'linkedin', 'article_share'))}`}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={() => trackGrowthEvent('share_click', { article_id: article.id, cta_variant: 'linkedin' })}
+                    className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]"
+                  >
+                    LinkedIn
+                  </a>
+                  <a
+                    href={`https://t.me/share/url?url=${encodeURIComponent(buildShareUrl(sharePath, 'telegram', 'article_share'))}&text=${encodeURIComponent(article.title)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={() => trackGrowthEvent('share_click', { article_id: article.id, cta_variant: 'telegram' })}
                     className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-[#00652E]"
                   >
                     Telegram

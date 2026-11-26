@@ -1,0 +1,195 @@
+{
+  "entities": {
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Authorized Google-authenticated editorial administrator record.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the administrator."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 200,
+          "description": "Verified Google account email."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["super_admin", "admin", "editor"],
+          "description": "Editorial admin privilege tier."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["uid", "email", "role", "createdAt", "updatedAt"]
+    },
+    "Advertisement": {
+      "title": "Advertisement",
+      "description": "Persistent sponsor banner displayed across Website pages, E-Paper Broadsheet, and PDF editions.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique advertisement ID."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Primary advertisement headline."
+        },
+        "advertiser": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Sponsor or advertiser name."
+        },
+        "placement": {
+          "type": "string",
+          "enum": [
+            "all_slots",
+            "header_banner",
+            "homepage_mid",
+            "sidebar",
+            "article_inline",
+            "epaper_banner"
+          ],
+          "description": "Portal placement slot."
+        },
+        "image_url": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "HTTPS banner image URL or relative upload path."
+        },
+        "target_url": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "Destination click-through URL or internal route."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "Optional promotional summary copy."
+        },
+        "cta_text": {
+          "type": "string",
+          "maxLength": 60,
+          "description": "Call-to-action button label."
+        },
+        "language": {
+          "type": "string",
+          "enum": ["all", "en", "hi"],
+          "description": "Target portal edition language."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether the advertisement is currently published."
+        },
+        "start_date": {
+          "type": "string",
+          "maxLength": 20,
+          "pattern": "^(|\\d{4}-\\d{2}-\\d{2})$",
+          "description": "Optional IST start date (YYYY-MM-DD)."
+        },
+        "end_date": {
+          "type": "string",
+          "maxLength": 20,
+          "pattern": "^(|\\d{4}-\\d{2}-\\d{2})$",
+          "description": "Optional IST end date (YYYY-MM-DD)."
+        },
+        "impressions": {
+          "type": "integer",
+          "description": "Recorded impression count."
+        },
+        "clicks": {
+          "type": "integer",
+          "description": "Recorded click count."
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the creating admin."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "advertiser",
+        "placement",
+        "image_url",
+        "target_url",
+        "description",
+        "cta_text",
+        "language",
+        "active",
+        "start_date",
+        "end_date",
+        "impressions",
+        "clicks",
+        "ownerUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ConnectionTest": {
+      "title": "ConnectionTest",
+      "description": "Read-only connectivity probe document.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "Health probe flag."
+        }
+      },
+      "required": ["ok"]
+    }
+  },
+  "firestore": {
+    "/admins/{uid}": {
+      "schema": {
+        "$ref": "#/entities/AdminRecord"
+      },
+      "description": "PII-isolated administrator access registry."
+    },
+    "/ads/{adId}": {
+      "schema": {
+        "$ref": "#/entities/Advertisement"
+      },
+      "description": "Cloud-persisted sponsor advertisements for Website and E-Paper."
+    },
+    "/test/{docId}": {
+      "schema": {
+        "$ref": "#/entities/ConnectionTest"
+      },
+      "description": "Read-only startup connection probe target (/test/connection)."
+    }
+  }
+}

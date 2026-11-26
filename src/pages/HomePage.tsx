@@ -1,4 +1,4 @@
-import { ArrowRight, BookOpen, Download, Headphones, History, MapPin, TrendingUp } from 'lucide-react';
+import { ArrowRight, BookOpen, Compass, Download, Headphones, History, MapPin, TrendingUp } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
@@ -7,8 +7,9 @@ import { PollWidget } from '../components/PollWidget.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
-import type { Article, Edition, StateItem } from '../types/news.ts';
+import type { Article, ContentGuide, Edition, GrowthConfig, StateItem } from '../types/news.ts';
 import { formatIndiaDate } from '../utils/date.ts';
+import { trackGrowthEvent } from '../utils/utm.ts';
 
 interface HomePayload {
   breaking: Article[];
@@ -34,15 +35,23 @@ export function HomePage() {
   const [newsletterEmail, setNewsletterEmail] = useState('');
   const [newsletterFeedback, setNewsletterFeedback] = useState('');
   const [newsletterConfirmUrl, setNewsletterConfirmUrl] = useState('');
+  const [guides, setGuides] = useState<ContentGuide[]>([]);
+  const [growthConfig, setGrowthConfig] = useState<GrowthConfig | null>(null);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     const qs = language !== 'all' ? `?lang=${language}` : '';
-    fetch(`/api/home${qs}`)
-      .then((r) => r.json())
-      .then((json) => {
-        if (active) setData(json);
+    Promise.all([
+      fetch(`/api/home${qs}`).then((r) => r.json()),
+      fetch('/api/guides').then((r) => (r.ok ? r.json() : { guides: [] })),
+      fetch('/api/growth/config').then((r) => (r.ok ? r.json() : null)),
+    ])
+      .then(([homeJson, guidesJson, cfgJson]) => {
+        if (!active) return;
+        setData(homeJson);
+        setGuides(guidesJson.guides || []);
+        if (cfgJson) setGrowthConfig(cfgJson);
       })
       .catch(() => {})
       .finally(() => {
@@ -65,7 +74,10 @@ export function HomePage() {
     const json = await res.json();
     setNewsletterFeedback(json.message || json.error || '');
     if (json.confirmUrl) setNewsletterConfirmUrl(json.confirmUrl);
-    if (res.ok) setNewsletterEmail('');
+    if (res.ok) {
+      setNewsletterEmail('');
+      trackGrowthEvent('newsletter_signup', { cta_variant: 'homepage_banner', language });
+    }
   };
 
   const leadArticle = data?.featured?.[0] || data?.latest?.[0];
@@ -94,6 +106,31 @@ export function HomePage() {
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-12">
+        {/* CRO High-Converting Morning E-Paper & Daily Briefing Strip */}
+        {(growthConfig?.cro_sticky_bar_enabled ?? true) && (
+          <div className="rounded-lg bg-[#EAF5E5]/70 dark:bg-[#00451F]/30 border border-[#00652E]/25 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-xs sm:text-sm font-medium text-neutral-800 dark:text-neutral-100">
+              {growthConfig?.cro_cta_headline ||
+                'Get India’s verified morning E-Paper & top dispatches free every morning at 7 AM IST'}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Link
+                to="/epaper"
+                onClick={() => trackGrowthEvent('epaper_open', { cta_variant: 'cro_top_strip' })}
+                className="px-3.5 py-1.5 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold whitespace-nowrap transition-colors"
+              >
+                {growthConfig?.cro_cta_button || 'Get Free Daily E-Paper'}
+              </Link>
+              <Link
+                to="/guides"
+                className="px-3 py-1.5 rounded border border-[#00652E]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-white dark:hover:bg-neutral-900 whitespace-nowrap"
+              >
+                Citizen Guides
+              </Link>
+            </div>
+          </div>
+        )}
+
         <AdSlot placement="header_banner" />
 
         {loading && !data ? (
@@ -354,6 +391,48 @@ export function HomePage() {
                 ))}
               </div>
             </section>
+
+            {/* Content Marketing: Citizen Guides, Explainers & Videos */}
+            {guides.length > 0 && (
+              <section className="pt-6 border-t border-neutral-200 dark:border-neutral-800 space-y-5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Compass className="w-5 h-5 text-[#00652E] dark:text-[#4ade80]" />
+                    <h2 className="font-editorial text-2xl font-bold text-neutral-950 dark:text-white">
+                      Citizen Guides, Explainers &amp; Videos
+                    </h2>
+                  </div>
+                  <Link
+                    to="/guides"
+                    className="inline-flex items-center gap-1 text-sm font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
+                  >
+                    Explore Library <ArrowRight className="w-4 h-4" />
+                  </Link>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                  {guides.slice(0, 3).map((g) => (
+                    <Link
+                      key={g.id}
+                      to={`/guides/${g.slug}`}
+                      className="border border-neutral-200 dark:border-neutral-800 rounded-lg p-4 bg-white dark:bg-neutral-900 hover:border-[#00652E] transition-colors flex flex-col justify-between gap-2"
+                    >
+                      <div className="space-y-1.5">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-[#00652E] dark:text-[#4ade80]">
+                          {g.guide_type} · {g.category}
+                        </div>
+                        <h3 className="font-editorial text-base font-bold text-neutral-950 dark:text-white leading-snug">
+                          {g.title}
+                        </h3>
+                        <p className="text-xs text-neutral-600 dark:text-neutral-400 line-clamp-2">{g.summary}</p>
+                      </div>
+                      <span className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80]">
+                        Read Guide ({g.read_minutes} min) →
+                      </span>
+                    </Link>
+                  ))}
+                </div>
+              </section>
+            )}
 
             {/* Newsletter Callout */}
             <section className="rounded-xl bg-[#EAF5E5] dark:bg-neutral-900 border border-[#00652E]/20 dark:border-neutral-800 p-6 sm:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6">

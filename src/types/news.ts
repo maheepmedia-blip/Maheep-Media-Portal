@@ -376,3 +376,30 @@ export interface AiCitation {
   state_name?: string;
 }
 
+export interface ContentGuide {
+  id: string;
+  title: string;
+  slug: string;
+  guide_type: 'guide' | 'explainer' | 'video' | 'checklist';
+  category: string;
+  language: 'en' | 'hi';
+  summary: string;
+  body: string;
+  video_url: string;
+  image_url: string;
+  read_minutes: number;
+  author: string;
+  published: number | boolean;
+  views: number;
+  shares: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GrowthConfig {
+  cro_sticky_bar_enabled: boolean;
+  cro_cta_headline: string;
+  cro_cta_button: string;
+  local_seo_hq_city: string;
+  local_seo_region: string;
+}

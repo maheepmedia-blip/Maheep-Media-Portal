@@ -11,6 +11,12 @@ interface SeoHeadProps {
   canonicalPath?: string;
   ogType?: 'website' | 'article';
   ogImage?: string;
+  ogLocale?: 'en_IN' | 'hi_IN';
+  publishedTime?: string;
+  modifiedTime?: string;
+  section?: string;
+  keywords?: string;
+  geoPlacename?: string;
   prevPath?: string;
   nextPath?: string;
   breadcrumbs?: BreadcrumbItem[];
@@ -23,6 +29,12 @@ export function SeoHead({
   canonicalPath,
   ogType = 'website',
   ogImage,
+  ogLocale = 'en_IN',
+  publishedTime,
+  modifiedTime,
+  section,
+  keywords,
+  geoPlacename,
   prevPath,
   nextPath,
   breadcrumbs,
@@ -65,10 +77,25 @@ export function SeoHead({
     };
 
     setMeta('meta[name="description"]', 'content', description);
+    setMeta(
+      'meta[name="robots"]',
+      'content',
+      'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1',
+    );
+    if (keywords) setMeta('meta[name="keywords"]', 'content', keywords);
+    if (geoPlacename) setMeta('meta[name="geo.placename"]', 'content', geoPlacename);
+
     setMeta('meta[property="og:title"]', 'content', title);
     setMeta('meta[property="og:description"]', 'content', description);
     setMeta('meta[property="og:type"]', 'content', ogType);
     setMeta('meta[property="og:site_name"]', 'content', 'Maheep News Portal');
+    setMeta('meta[property="og:locale"]', 'content', ogLocale);
+    setMeta('meta[property="og:locale:alternate"]', 'content', ogLocale === 'hi_IN' ? 'en_IN' : 'hi_IN');
+    if (publishedTime) setMeta('meta[property="article:published_time"]', 'content', publishedTime);
+    if (modifiedTime) setMeta('meta[property="article:modified_time"]', 'content', modifiedTime);
+    if (section) setMeta('meta[property="article:section"]', 'content', section);
+
+    setMeta('meta[name="twitter:card"]', 'content', 'summary_large_image');
     setMeta('meta[name="twitter:title"]', 'content', title);
     setMeta('meta[name="twitter:description"]', 'content', description);
 
@@ -127,10 +154,28 @@ export function SeoHead({
       const s = document.createElement('script');
       s.id = scriptId;
       s.type = 'application/ld+json';
-      s.textContent = JSON.stringify(graph.length === 1 ? graph[0] : { '@context': 'https://schema.org', '@graph': graph });
+      s.textContent = JSON.stringify(
+        graph.length === 1 ? graph[0] : { '@context': 'https://schema.org', '@graph': graph },
+      );
       document.head.appendChild(s);
     }
-  }, [title, description, canonicalPath, ogType, ogImage, prevPath, nextPath, breadcrumbs, jsonLd]);
+  }, [
+    title,
+    description,
+    canonicalPath,
+    ogType,
+    ogImage,
+    ogLocale,
+    publishedTime,
+    modifiedTime,
+    section,
+    keywords,
+    geoPlacename,
+    prevPath,
+    nextPath,
+    breadcrumbs,
+    jsonLd,
+  ]);
 
   return null;
 }

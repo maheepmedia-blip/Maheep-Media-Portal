@@ -68,8 +68,40 @@ export function StatesPage() {
             ? `${activeState.name} News — Maheep News Portal`
             : 'States & Union Territories News — All 28 States & 8 UTs | Maheep News Portal'
         }
-        description="Complete regional journalism covering all 28 Indian States and 8 Union Territories with dynamic news counts and category filtering."
+        description={
+          activeState
+            ? `Verified local news, civic updates, government schemes, and regional E-Paper dispatches from ${activeState.name} (${activeState.code}), India.`
+            : 'Complete regional journalism covering all 28 Indian States and 8 Union Territories with dynamic news counts and category filtering.'
+        }
         canonicalPath={slug ? `/states/${slug}` : '/states'}
+        geoPlacename={activeState ? `${activeState.name}, India` : 'India'}
+        keywords={
+          activeState
+            ? `${activeState.name} news, ${activeState.name} hindi news, ${activeState.code} local news, maheep news`
+            : 'india state news, up news, bihar news, delhi news, maharashtra news, regional epaper'
+        }
+        breadcrumbs={
+          activeState
+            ? [
+                { name: 'Home', path: '/' },
+                { name: 'States & UTs', path: '/states' },
+                { name: activeState.name, path: `/states/${activeState.slug}` },
+              ]
+            : [
+                { name: 'Home', path: '/' },
+                { name: 'States & UTs', path: '/states' },
+              ]
+        }
+        jsonLd={{
+          '@context': 'https://schema.org',
+          '@type': 'NewsMediaOrganization',
+          name: activeState ? `Maheep News Portal — ${activeState.name} Desk` : 'Maheep News Portal — India Regional Desks',
+          areaServed: {
+            '@type': activeState ? 'AdministrativeArea' : 'Country',
+            name: activeState ? activeState.name : 'India',
+          },
+          email: 'maheepmedia@gmail.com',
+        }}
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-10">

@@ -1,0 +1,141 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 4 / Phase 4.1: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------------- GLOBAL HELPERS ----------------
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrapAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'maheepmedia@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrapAdmin() || (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    // ---------------- VALIDATION BLUEPRINTS ----------------
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'role', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 200
+        && data.role is string && data.role in ['super_admin', 'admin', 'editor']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdvertisement(data) {
+      return data.keys().hasAll([
+          'id', 'title', 'advertiser', 'placement', 'image_url', 'target_url',
+          'description', 'cta_text', 'language', 'active', 'start_date', 'end_date',
+          'impressions', 'clicks', 'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'title', 'advertiser', 'placement', 'image_url', 'target_url',
+          'description', 'cta_text', 'language', 'active', 'start_date', 'end_date',
+          'impressions', 'clicks', 'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 3 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.advertiser is string && data.advertiser.size() <= 120
+        && data.placement is string && data.placement in [
+          'all_slots', 'header_banner', 'homepage_mid', 'sidebar', 'article_inline', 'epaper_banner'
+        ]
+        && data.image_url is string && data.image_url.size() <= 2048
+        && data.target_url is string && data.target_url.size() <= 2048
+        && data.description is string && data.description.size() <= 400
+        && data.cta_text is string && data.cta_text.size() <= 60
+        && data.language is string && data.language in ['all', 'en', 'hi']
+        && data.active is bool
+        && data.start_date is string && data.start_date.size() <= 20 && data.start_date.matches('^(|\\d{4}-\\d{2}-\\d{2})$')
+        && data.end_date is string && data.end_date.size() <= 20 && data.end_date.matches('^(|\\d{4}-\\d{2}-\\d{2})$')
+        && data.impressions is int && data.impressions >= 0
+        && data.clicks is int && data.clicks >= 0
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 && data.ownerUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // ---------------- COLLECTION RULES ----------------
+
+    // PII-isolated administrator access registry
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && isVerifiedUser() && (request.auth.uid == uid || isBootstrapAdmin());
+      allow list: if false;
+      allow create: if isValidId(uid) && isValidAdminRecord(incoming()) && isBootstrapAdmin()
+        && incoming().uid == uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(uid) && isValidAdminRecord(incoming()) && isBootstrapAdmin()
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'role', 'updatedAt']);
+      allow delete: if isValidId(uid) && isBootstrapAdmin();
+    }
+
+    // Cloud-persisted sponsor advertisements for Website and E-Paper
+    match /ads/{adId} {
+      allow get: if isValidId(adId) && ((resource != null && existing().active == true) || isAdmin());
+      // Pillar 8: Zero get()/exists() in allow list; enforce active == true for non-bootstrap queries
+      allow list: if existing().active == true || isBootstrapAdmin();
+
+      allow create: if isSignedIn()
+        && isVerifiedUser()
+        && isValidId(adId)
+        && isValidAdvertisement(incoming())
+        && isAdmin()
+        && incoming().id == adId
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isVerifiedUser()
+        && isValidId(adId)
+        && isValidAdvertisement(incoming())
+        && isAdmin()
+        && incoming().id == existing().id
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'advertiser', 'placement', 'image_url', 'target_url',
+          'description', 'cta_text', 'language', 'active', 'start_date', 'end_date',
+          'impressions', 'clicks', 'updatedAt'
+        ]);
+
+      allow delete: if isSignedIn() && isVerifiedUser() && isValidId(adId) && isAdmin();
+    }
+
+    // Startup connection probe target
+    match /test/{docId} {
+      allow get: if isValidId(docId) && docId == 'connection';
+      allow list, write: if false;
+    }
+  }
+}

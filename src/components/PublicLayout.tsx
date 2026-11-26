@@ -1,9 +1,10 @@
-import { BookOpen, Menu, Moon, Search, Sun, User, X } from 'lucide-react';
+import { ArrowUp, BookOpen, Compass, Home, MapPin, Menu, Moon, Search, Sun, User, WifiOff, X } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
-import { Link, NavLink, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { usePortal } from '../context/PortalContext.tsx';
 import type { Article } from '../types/news.ts';
 import { getIndiaClockParts } from '../utils/date.ts';
+import { captureUtmParams, trackGrowthEvent } from '../utils/utm.ts';
 import { ReaderDrawer } from './ReaderDrawer.tsx';
 import { WeatherWidget } from './WeatherWidget.tsx';
 
@@ -22,12 +23,37 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
   const [newsletterConfirmUrl, setNewsletterConfirmUrl] = useState('');
   const [newsletterErr, setNewsletterErr] = useState('');
   const navigate = useNavigate();
+  const location = useLocation();
+  const [showBackTop, setShowBackTop] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
+
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
       setClock(getIndiaClockParts());
     }, 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    captureUtmParams();
+    trackGrowthEvent('page_view', { path: location.pathname, language });
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    const onScroll = () => setShowBackTop(window.scrollY > 420);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
   const handleSearch = (e: React.FormEvent) => {
@@ -59,6 +85,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
       setNewsletterMsg(data.message || 'Subscribed to Maheep Daily Briefing.');
       if (data.confirmUrl) setNewsletterConfirmUrl(data.confirmUrl);
       setNewsletterEmail('');
+      trackGrowthEvent('newsletter_signup', { cta_variant: 'footer_form', language });
     } catch {
       setNewsletterErr('Network error. Please try again.');
     }
@@ -73,6 +100,14 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
 
   return (
     <div className="min-h-screen flex flex-col bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+      {/* Accessibility Skip Link (UXO) */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-3 focus:py-2 focus:rounded focus:bg-[#00652E] focus:text-white focus:text-xs focus:font-semibold"
+      >
+        Skip to main content
+      </a>
+
       {/* Sticky Top Bar (Strict 3-zone contract, <=15% mobile height) */}
       <header className="sticky top-0 z-40 bg-white/95 dark:bg-neutral-950/95 backdrop-blur border-b border-neutral-200 dark:border-neutral-800 no-print">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4 sm:gap-8">
@@ -95,6 +130,9 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
             </NavLink>
             <NavLink to="/business-sports" className={navLinkClass}>
               Business
+            </NavLink>
+            <NavLink to="/guides" className={navLinkClass}>
+              Guides
             </NavLink>
             <NavLink to="/briefing" className={navLinkClass}>
               AI &amp; Audio
@@ -147,6 +185,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
               <Link to="/states" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">States &amp; UTs</Link>
               <Link to="/business-sports" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">Business &amp; Sports</Link>
               <Link to="/briefing" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">Ask AI &amp; Audio</Link>
+              <Link to="/guides" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">Guides &amp; Videos</Link>
               <Link to="/timelines" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">News Timelines</Link>
               <Link to="/epaper" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">E-Paper Archive</Link>
               <Link to="/contact" onClick={() => setMobileMenuOpen(false)} className="py-2 px-2 rounded hover:bg-[#EAF5E5] dark:hover:bg-neutral-900">Contact</Link>
@@ -270,10 +309,10 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
       )}
 
       {/* Main Page Content */}
-      <main className="flex-1">{children}</main>
+      <main id="main-content" className="flex-1 pb-16 lg:pb-0">{children}</main>
 
       {/* Editorial Footer */}
-      <footer className="bg-[#00451F] text-neutral-100 mt-16 no-print">
+      <footer className="bg-[#00451F] text-neutral-100 mt-16 mb-14 lg:mb-0 no-print">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
           <div>
             <h2 className="font-editorial text-xl font-bold text-white">MAHEEP NEWS PORTAL</h2>
@@ -290,7 +329,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
               <li><Link to="/national" className="hover:text-white hover:underline">National News</Link></li>
               <li><Link to="/states" className="hover:text-white hover:underline">States &amp; Union Territories</Link></li>
               <li><Link to="/business-sports" className="hover:text-white hover:underline">Business &amp; Markets</Link></li>
-              <li><Link to="/business-sports?tab=sports" className="hover:text-white hover:underline">Sports Coverage</Link></li>
+              <li><Link to="/guides" className="hover:text-white hover:underline">Citizen Guides &amp; Videos</Link></li>
               <li><Link to="/epaper" className="hover:text-white hover:underline">Daily E-Paper &amp; PDF Archive</Link></li>
             </ul>
           </div>
@@ -351,6 +390,78 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
           </div>
         </div>
       </footer>
+
+      {/* Mobile Bottom Quick-Navigation Bar (UXO) */}
+      <nav
+        aria-label="Mobile quick navigation"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 dark:bg-neutral-950/95 backdrop-blur border-t border-neutral-200 dark:border-neutral-800 grid grid-cols-5 text-[11px] font-medium no-print"
+      >
+        <NavLink
+          to="/"
+          end
+          className={({ isActive }) =>
+            `flex flex-col items-center py-2 gap-0.5 ${isActive ? 'text-[#00652E] dark:text-[#4ade80] font-bold' : 'text-neutral-600 dark:text-neutral-400'}`
+          }
+        >
+          <Home className="w-4 h-4" />
+          <span>Home</span>
+        </NavLink>
+        <NavLink
+          to="/states"
+          className={({ isActive }) =>
+            `flex flex-col items-center py-2 gap-0.5 ${isActive ? 'text-[#00652E] dark:text-[#4ade80] font-bold' : 'text-neutral-600 dark:text-neutral-400'}`
+          }
+        >
+          <MapPin className="w-4 h-4" />
+          <span>States</span>
+        </NavLink>
+        <NavLink
+          to="/epaper"
+          className={({ isActive }) =>
+            `flex flex-col items-center py-2 gap-0.5 ${isActive ? 'text-[#00652E] dark:text-[#4ade80] font-bold' : 'text-neutral-600 dark:text-neutral-400'}`
+          }
+        >
+          <BookOpen className="w-4 h-4" />
+          <span>E-Paper</span>
+        </NavLink>
+        <NavLink
+          to="/guides"
+          className={({ isActive }) =>
+            `flex flex-col items-center py-2 gap-0.5 ${isActive ? 'text-[#00652E] dark:text-[#4ade80] font-bold' : 'text-neutral-600 dark:text-neutral-400'}`
+          }
+        >
+          <Compass className="w-4 h-4" />
+          <span>Guides</span>
+        </NavLink>
+        <NavLink
+          to="/search"
+          className={({ isActive }) =>
+            `flex flex-col items-center py-2 gap-0.5 ${isActive ? 'text-[#00652E] dark:text-[#4ade80] font-bold' : 'text-neutral-600 dark:text-neutral-400'}`
+          }
+        >
+          <Search className="w-4 h-4" />
+          <span>Search</span>
+        </NavLink>
+      </nav>
+
+      {/* Back to Top UXO Button */}
+      {showBackTop && (
+        <button
+          type="button"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          aria-label="Scroll back to top"
+          className="fixed bottom-16 lg:bottom-6 right-4 z-40 p-2.5 rounded-full bg-[#00652E] hover:bg-[#00451F] text-white shadow-lg transition-transform hover:scale-105 no-print"
+        >
+          <ArrowUp className="w-4 h-4" />
+        </button>
+      )}
+
+      {!isOnline && (
+        <div className="fixed bottom-16 lg:bottom-4 left-4 z-50 flex items-center gap-2 rounded-lg bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white shadow-lg no-print">
+          <WifiOff className="w-3.5 h-3.5" />
+          <span>Offline Mode — Cached stories &amp; pages remain readable.</span>
+        </div>
+      )}
       <ReaderDrawer />
     </div>
   );

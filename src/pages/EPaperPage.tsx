@@ -21,6 +21,7 @@ import { ArticleImage } from '../components/ArticleImage.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
+import { fetchActiveAdsMerged } from '../services/adsFirestore.ts';
 import type { Advertisement, Edition, EditionPage } from '../types/news.ts';
 import { formatIndiaDateTime } from '../utils/date.ts';
 import { downloadEditionPdf } from '../utils/pdf.ts';
@@ -116,6 +117,9 @@ function BroadsheetSponsorBox({
               src={ad.image_url}
               alt={ad.title}
               loading="lazy"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
               className="w-24 sm:w-32 h-16 sm:h-20 object-cover rounded border border-current/15 shrink-0 bg-white"
             />
           )}
@@ -180,12 +184,21 @@ export function EPaperPage() {
   const [showArchiveResults, setShowArchiveResults] = useState(false);
 
   useEffect(() => {
-    const qs = new URLSearchParams({ placement: 'epaper_banner' });
-    if (language === 'en' || language === 'hi') qs.set('lang', language);
-    fetch(`/api/ads?${qs.toString()}`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((json) => setActiveAds((json.ads || []) as Advertisement[]))
-      .catch(() => setActiveAds([]));
+    let active = true;
+    fetchActiveAdsMerged({
+      placement: 'epaper_banner',
+      lang: language === 'en' || language === 'hi' ? language : 'all',
+      allowFallback: true,
+    })
+      .then((list) => {
+        if (active) setActiveAds(list);
+      })
+      .catch(() => {
+        if (active) setActiveAds([]);
+      });
+    return () => {
+      active = false;
+    };
   }, [language]);
 
   useEffect(() => {

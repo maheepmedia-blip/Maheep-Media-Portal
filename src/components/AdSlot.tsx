@@ -2,6 +2,7 @@ import { ExternalLink } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { usePortal } from '../context/PortalContext.tsx';
+import { fetchActiveAdsMerged } from '../services/adsFirestore.ts';
 import type { AdPlacement, Advertisement } from '../types/news.ts';
 
 interface AdSlotProps {
@@ -16,23 +17,14 @@ export function AdSlot({ placement, className = '' }: AdSlotProps) {
 
   useEffect(() => {
     let active = true;
-    const qs = new URLSearchParams({ placement });
-    if (language === 'en' || language === 'hi') {
-      qs.set('lang', language);
-    }
-
-    fetch(`/api/ads?${qs.toString()}`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((json) => {
+    fetchActiveAdsMerged({
+      placement,
+      lang: language === 'en' || language === 'hi' ? language : 'all',
+      allowFallback: true,
+    })
+      .then((list) => {
         if (!active) return;
-        const list = (json.ads || []) as Advertisement[];
-        if (list.length === 0) {
-          setAd(null);
-          return;
-        }
-        // Pick primary active ad (rotate gently across session if multiple exist for same slot)
-        const chosen = list[0];
-        setAd(chosen);
+        setAd(list.length > 0 ? list[0] : null);
       })
       .catch(() => {
         if (active) setAd(null);
@@ -80,7 +72,16 @@ export function AdSlot({ placement, className = '' }: AdSlotProps) {
       </div>
       {ad.image_url && (
         <div className="aspect-[16/10] bg-neutral-100 dark:bg-neutral-800 overflow-hidden">
-          <img src={ad.image_url} alt={ad.title} className="w-full h-full object-cover" loading="lazy" />
+          <img
+            src={ad.image_url}
+            alt={ad.title}
+            className="w-full h-full object-cover"
+            loading="lazy"
+            onError={(e) => {
+              const wrapper = e.currentTarget.parentElement;
+              if (wrapper) wrapper.style.display = 'none';
+            }}
+          />
         </div>
       )}
       <div className="p-4 space-y-2">
@@ -115,6 +116,9 @@ export function AdSlot({ placement, className = '' }: AdSlotProps) {
               src={ad.image_url}
               alt={ad.title}
               loading="lazy"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
               className="w-24 sm:w-36 h-16 sm:h-20 object-cover rounded border border-neutral-200 dark:border-neutral-700 shrink-0 bg-white"
             />
           )}
