@@ -8,7 +8,7 @@ import { PollWidget } from '../components/PollWidget.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { getEditionMeta, usePortal } from '../context/PortalContext.tsx';
-import type { Article, ContentGuide, Edition, GrowthConfig, StateItem } from '../types/news.ts';
+import type { Article, CityItem, ContentGuide, Edition, GrowthConfig, StateItem } from '../types/news.ts';
 import { formatIndiaDate } from '../utils/date.ts';
 import { trackGrowthEvent } from '../utils/utm.ts';
 
@@ -29,9 +29,17 @@ interface HomePayload {
   latestEdition: Edition | null;
 }
 
+interface CityPridePayload {
+  city: CityItem;
+  cityArticles: Article[];
+  recentCityArticles: Article[];
+  stateArticles: Article[];
+}
+
 export function HomePage() {
   const {
     language,
+    cities,
     selectedEdition,
     selectedDate,
     selectedLocalState,
@@ -42,6 +50,7 @@ export function HomePage() {
     reopenEditionPicker,
   } = usePortal();
   const [data, setData] = useState<HomePayload | null>(null);
+  const [cityPride, setCityPride] = useState<CityPridePayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [newsletterEmail, setNewsletterEmail] = useState('');
   const [newsletterFeedback, setNewsletterFeedback] = useState('');
@@ -60,16 +69,31 @@ export function HomePage() {
     if (selectedEdition === 'local' && selectedLocalCity) params.set('city', selectedLocalCity);
     const qs = params.toString() ? `?${params.toString()}` : '';
 
+    const cityPridePromise: Promise<CityPridePayload | null> =
+      selectedEdition === 'local' && selectedLocalCity
+        ? (() => {
+            const cParams = new URLSearchParams();
+            if (selectedDate) cParams.set('date', selectedDate);
+            if (language !== 'all') cParams.set('lang', language);
+            const cQs = cParams.toString() ? `?${cParams.toString()}` : '';
+            return fetch(`/api/cities/${encodeURIComponent(selectedLocalCity)}/our-pride${cQs}`)
+              .then((r) => (r.ok ? r.json() : null))
+              .catch(() => null);
+          })()
+        : Promise.resolve(null);
+
     Promise.all([
       fetch(`/api/home${qs}`).then((r) => r.json()),
       fetch('/api/guides').then((r) => (r.ok ? r.json() : { guides: [] })),
       fetch('/api/growth/config').then((r) => (r.ok ? r.json() : null)),
+      cityPridePromise,
     ])
-      .then(([homeJson, guidesJson, cfgJson]) => {
+      .then(([homeJson, guidesJson, cfgJson, prideJson]) => {
         if (!active) return;
         setData(homeJson);
         setGuides(guidesJson.guides || []);
         if (cfgJson) setGrowthConfig(cfgJson);
+        setCityPride(prideJson);
       })
       .catch(() => {})
       .finally(() => {
@@ -98,6 +122,11 @@ export function HomePage() {
     }
   };
 
+  const activeCityMeta =
+    selectedEdition === 'local' && selectedLocalCity
+      ? cityPride?.city || cities.find((c) => c.slug === selectedLocalCity) || null
+      : null;
+
   const activeMeta = getEditionMeta(selectedEdition);
   const epaperHref = (() => {
     const qp = new URLSearchParams();
@@ -109,10 +138,33 @@ export function HomePage() {
     const qs = qp.toString();
     return qs ? `/epaper?${qs}` : '/epaper';
   })();
-  const leadArticle = data?.featured?.[0] || data?.latest?.[0];
-  const secondaryFeatured = (data?.featured || []).slice(1, 4);
+
+  const cityFallbackPool: Article[] = (() => {
+    if (!cityPride) return [];
+    const seen = new Set<string>();
+    const combined: Article[] = [];
+    for (const item of [
+      ...(cityPride.cityArticles || []),
+      ...(cityPride.recentCityArticles || []),
+      ...(cityPride.stateArticles || []),
+    ]) {
+      if (item?.id && !seen.has(item.id)) {
+        seen.add(item.id);
+        combined.push(item);
+      }
+    }
+    return combined;
+  })();
+
+  const effectiveFeatured =
+    (data?.featured || []).length > 0 ? data!.featured : cityFallbackPool.slice(0, 4);
+  const effectiveLatest =
+    (data?.latest || []).length > 0 ? data!.latest : cityFallbackPool;
+
+  const leadArticle = effectiveFeatured[0] || effectiveLatest[0];
+  const secondaryFeatured = effectiveFeatured.slice(1, 4);
   const featuredIds = new Set([leadArticle?.id, ...secondaryFeatured.map((a) => a.id)].filter(Boolean));
-  const latestFeed = (data?.latest || []).filter((a) => !featuredIds.has(a.id));
+  const latestFeed = effectiveLatest.filter((a) => !featuredIds.has(a.id));
 
   const fallbackByCat = (slugs: string[]) =>
     latestFeed.filter((a) => slugs.includes(a.category_slug || '')).slice(0, 3);
@@ -177,15 +229,40 @@ export function HomePage() {
                 {/* Tier 1: Lead Story + Trending Sidebar */}
                 <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
                   <div className="lg:col-span-9 space-y-8">
+                    {activeCityMeta && (
+                      <div className="border border-neutral-200 dark:border-neutral-800 rounded-lg p-4 bg-[#FBF9F5] dark:bg-neutral-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-1.5 text-xs font-semibold text-[#00652E] dark:text-[#4ade80]">
+                            <MapPin className="w-3.5 h-3.5" />
+                            <span>Our Pride City Edition · {activeCityMeta.state_name}</span>
+                          </div>
+                          <h2 className="font-editorial text-xl font-bold text-neutral-950 dark:text-white mt-0.5">
+                            {activeCityMeta.name.replace(' (town)', '')} Local News Desk
+                          </h2>
+                          <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono-tabular mt-0.5">
+                            Census 2011: {new Intl.NumberFormat('en-IN').format(activeCityMeta.census_2011)} ·{' '}
+                            {Math.abs(activeCityMeta.lat).toFixed(2)}°N {Math.abs(activeCityMeta.lon).toFixed(2)}°E
+                          </p>
+                        </div>
+                        <Link
+                          to={epaperHref}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold whitespace-nowrap shrink-0"
+                        >
+                          <BookOpen className="w-3.5 h-3.5" />
+                          Open {activeCityMeta.name.replace(' (town)', '')} E-Paper
+                        </Link>
+                      </div>
+                    )}
+
                     {leadArticle ? (
                       <NewsCard article={leadArticle} variant="lead" />
                     ) : (
                       <div className="p-8 border border-neutral-200 dark:border-neutral-800 rounded-lg text-center space-y-4 bg-white dark:bg-neutral-900">
                         <h2 className="font-editorial text-2xl font-bold text-neutral-950 dark:text-white">
-                          No {activeMeta.brand} dispatches found{selectedDate ? ` for ${selectedDate}` : ''}
+                          No {activeCityMeta ? activeCityMeta.name.replace(' (town)', '') : activeMeta.brand} dispatches found{selectedDate ? ` for ${selectedDate}` : ''}
                         </h2>
                         <p className="text-sm text-neutral-600 dark:text-neutral-400 max-w-md mx-auto">
-                          Try viewing all recent dates for {activeMeta.brand}, switching to another desk, or adjusting your language filter.
+                          Try viewing all recent dates for {activeCityMeta ? activeCityMeta.name.replace(' (town)', '') : activeMeta.brand}, switching to another desk, or adjusting your language filter.
                         </p>
                         <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
                           {selectedDate && (
@@ -219,7 +296,11 @@ export function HomePage() {
                       <div>
                         <div className="flex items-center justify-between mb-4">
                           <h2 className="font-editorial text-xl font-bold text-neutral-950 dark:text-white">
-                            {selectedEdition === 'all' ? 'Featured Dispatches' : `${activeMeta.brand} — Featured Dispatches`}
+                            {selectedEdition === 'all'
+                              ? 'Featured Dispatches'
+                              : activeCityMeta
+                                ? `${activeCityMeta.name.replace(' (town)', '')} · Our Pride Dispatches`
+                                : `${activeMeta.brand} — Featured Dispatches`}
                           </h2>
                           <Link to="/search" className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline">
                             Browse All Stories
@@ -542,8 +623,8 @@ export function HomePage() {
                 )}
               </div>
             )}
-          </>
-        )}
+              </>
+            )}
           </>
         )}
       </div>

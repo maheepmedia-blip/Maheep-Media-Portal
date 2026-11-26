@@ -1,10 +1,11 @@
-import { ArrowUp, BookOpen, Compass, Home, MapPin, Menu, Moon, Search, Sun, User, WifiOff, X } from 'lucide-react';
+import { ArrowUp, BookOpen, Calendar, Compass, Home, MapPin, Menu, Moon, RotateCcw, Search, Sun, User, WifiOff, X } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { getEditionMeta, usePortal } from '../context/PortalContext.tsx';
-import type { Article } from '../types/news.ts';
+import { type NewsEdition, getEditionMeta, usePortal } from '../context/PortalContext.tsx';
+import type { Article, CityItem } from '../types/news.ts';
 import { getIndiaClockParts } from '../utils/date.ts';
 import { captureUtmParams, trackGrowthEvent } from '../utils/utm.ts';
+import { CitySelector } from './CitySelector.tsx';
 import { ReaderDrawer } from './ReaderDrawer.tsx';
 import { WeatherWidget } from './WeatherWidget.tsx';
 
@@ -12,6 +13,13 @@ interface PublicLayoutProps {
   children: React.ReactNode;
   breakingNews?: Article[];
 }
+
+const HEADER_EDITION_OPTIONS: ReadonlyArray<{ id: NewsEdition; brand: string; sub: string }> = [
+  { id: 'national', brand: 'The Beacon', sub: 'National' },
+  { id: 'international', brand: 'WorldWire', sub: 'International' },
+  { id: 'local', brand: 'Our Pride', sub: 'Local' },
+  { id: 'all', brand: 'All Desks', sub: 'Full' },
+];
 
 export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps) {
   const {
@@ -23,7 +31,12 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
     setReaderDrawerOpen,
     selectedEdition,
     selectedDate,
+    selectedLocalState,
+    selectedLocalCity,
     editionSetupDone,
+    setSelectedEdition,
+    setSelectedDate,
+    selectCityEdition,
     reopenEditionPicker,
   } = usePortal();
   const [clock, setClock] = useState(() => getIndiaClockParts());
@@ -109,6 +122,55 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
         : 'border-transparent text-neutral-700 dark:text-neutral-300 hover:text-[#00652E] dark:hover:text-[#4ade80]'
     }`;
 
+  const todayIst = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+  const yesterdayIst = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(Date.now() - 86_400_000));
+
+  const handleHeaderEditionChange = (edition: NewsEdition) => {
+    setSelectedEdition(edition);
+    if (location.pathname !== '/' && location.pathname !== '/epaper') {
+      navigate('/');
+    } else if (location.pathname === '/epaper' && edition === 'local') {
+      navigate('/epaper?section=our-pride');
+    }
+  };
+
+  const handleHeaderDateChange = (nextDate: string) => {
+    setSelectedDate(nextDate);
+    if (location.pathname !== '/' && location.pathname !== '/epaper') {
+      navigate('/');
+    }
+  };
+
+  const handleHeaderCityChange = (city: CityItem | null) => {
+    if (city) {
+      selectCityEdition(city.slug, city.state_slug || '');
+      if (location.pathname === '/epaper') {
+        const qp = new URLSearchParams({ section: 'our-pride', city: city.slug });
+        if (selectedDate) qp.set('date', selectedDate);
+        navigate(`/epaper?${qp.toString()}`);
+      } else if (location.pathname !== '/') {
+        navigate('/');
+      }
+    } else {
+      selectCityEdition('');
+      if (location.pathname === '/epaper') {
+        navigate('/epaper?section=our-pride');
+      } else if (location.pathname !== '/') {
+        navigate('/');
+      }
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
       {/* Accessibility Skip Link (UXO) */}
@@ -172,9 +234,181 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
           </div>
         </div>
 
+        {/* Persistent Navigation Header Bar for Edition, City & Date Switching (Desktop) */}
+        {(editionSetupDone || location.pathname !== '/') && (
+          <div className="hidden md:block border-t border-neutral-200/80 dark:border-neutral-800 bg-[#FBF9F5]/95 dark:bg-neutral-900/95">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Header edition switcher">
+                <span className="font-semibold text-neutral-500 dark:text-neutral-400 mr-1 whitespace-nowrap">
+                  Edition:
+                </span>
+                {HEADER_EDITION_OPTIONS.map((opt) => {
+                  const active = selectedEdition === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => handleHeaderEditionChange(opt.id)}
+                      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap ${
+                        active
+                          ? 'bg-[#00652E] text-white font-semibold'
+                          : 'bg-white dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-800 hover:border-[#00652E]'
+                      }`}
+                    >
+                      {opt.brand}{' '}
+                      <span className={active ? 'text-[#EAF5E5]' : 'text-neutral-400'}>({opt.sub})</span>
+                    </button>
+                  );
+                })}
+                <CitySelector
+                  value={selectedEdition === 'local' ? selectedLocalCity : ''}
+                  stateFilter={selectedEdition === 'local' ? selectedLocalState : ''}
+                  onChange={handleHeaderCityChange}
+                  placeholder="City Edition"
+                  variant="header"
+                  ariaLabel="Select city from header"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <div className="inline-flex items-center rounded bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => handleHeaderDateChange(todayIst)}
+                    className={`px-2 py-0.5 rounded font-medium whitespace-nowrap ${
+                      selectedDate === todayIst
+                        ? 'bg-[#00652E] text-white'
+                        : 'text-neutral-600 dark:text-neutral-300 hover:text-[#00652E]'
+                    }`}
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleHeaderDateChange(yesterdayIst)}
+                    className={`px-2 py-0.5 rounded font-medium whitespace-nowrap ${
+                      selectedDate === yesterdayIst
+                        ? 'bg-[#00652E] text-white'
+                        : 'text-neutral-600 dark:text-neutral-300 hover:text-[#00652E]'
+                    }`}
+                  >
+                    Yesterday
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleHeaderDateChange('')}
+                    className={`px-2 py-0.5 rounded font-medium whitespace-nowrap ${
+                      selectedDate === ''
+                        ? 'bg-[#00652E] text-white'
+                        : 'text-neutral-600 dark:text-neutral-300 hover:text-[#00652E]'
+                    }`}
+                  >
+                    All Dates
+                  </button>
+                </div>
+
+                <label className="inline-flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-[#00652E] dark:text-[#4ade80]" />
+                  <input
+                    aria-label="Modify selected edition date from header"
+                    type="date"
+                    value={selectedDate}
+                    max={todayIst}
+                    onChange={(e) => handleHeaderDateChange(e.target.value)}
+                    className="px-2 py-0.5 text-xs font-mono-tabular rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-neutral-800 dark:text-neutral-200"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    reopenEditionPicker();
+                    if (location.pathname !== '/') navigate('/');
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-950 font-semibold text-[#00652E] dark:text-[#4ade80] hover:border-[#00652E] whitespace-nowrap"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Setup Screen
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Mobile Drawer */}
         {mobileMenuOpen && (
-          <div className="lg:hidden border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 px-4 py-4 space-y-3">
+          <div className="lg:hidden border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 px-4 py-4 space-y-4">
+            {(editionSetupDone || location.pathname !== '/') && (
+              <div className="p-3 rounded-lg bg-[#FBF9F5] dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 space-y-2.5">
+                <div className="flex items-center justify-between text-xs font-semibold text-[#00652E] dark:text-[#4ade80]">
+                  <span>Edition, City &amp; Date</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      reopenEditionPicker();
+                      setMobileMenuOpen(false);
+                      if (location.pathname !== '/') navigate('/');
+                    }}
+                    className="underline"
+                  >
+                    Open Setup Screen
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 text-xs">
+                  {HEADER_EDITION_OPTIONS.map((opt) => {
+                    const active = selectedEdition === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          handleHeaderEditionChange(opt.id);
+                          setMobileMenuOpen(false);
+                        }}
+                        className={`px-2.5 py-1.5 rounded text-left font-medium border ${
+                          active
+                            ? 'bg-[#00652E] text-white border-[#00652E] font-semibold'
+                            : 'bg-white dark:bg-neutral-950 border-neutral-200 dark:border-neutral-800 text-neutral-800 dark:text-neutral-200'
+                        }`}
+                      >
+                        {opt.brand}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div>
+                  <CitySelector
+                    value={selectedEdition === 'local' ? selectedLocalCity : ''}
+                    stateFilter={selectedEdition === 'local' ? selectedLocalState : ''}
+                    onChange={(city) => {
+                      handleHeaderCityChange(city);
+                      setMobileMenuOpen(false);
+                    }}
+                    placeholder="Choose Indian City (Our Pride)"
+                    variant="inline"
+                    ariaLabel="Select city in mobile menu"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    aria-label="Modify edition date on mobile"
+                    type="date"
+                    value={selectedDate}
+                    max={todayIst}
+                    onChange={(e) => handleHeaderDateChange(e.target.value)}
+                    className="flex-1 px-2.5 py-1.5 text-xs font-mono-tabular rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleHeaderDateChange('')}
+                    className="px-2.5 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-medium"
+                  >
+                    All Dates
+                  </button>
+                </div>
+              </div>
+            )}
+
             <form onSubmit={handleSearch} className="flex gap-2">
               <input
                 type="search"
@@ -292,7 +526,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
                 News from India &amp; Beyond · All 28 States &amp; 8 Union Territories
               </p>
               {editionSetupDone && (
-                <div className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+                <div className="md:hidden flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
                   <span>
                     Active Desk:{' '}
                     <strong className="text-neutral-900 dark:text-neutral-100">

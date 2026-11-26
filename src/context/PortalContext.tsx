@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import type { AdminUser, ReaderUser } from '../types/news.ts';
+import type { AdminUser, CityItem, ReaderUser } from '../types/news.ts';
 
 export type LanguageFilter = 'all' | 'en' | 'hi';
 export type FontSizeScale = 'sm' | 'md' | 'lg';
@@ -49,7 +49,7 @@ export function getEditionMeta(edition: NewsEdition): EditionMeta {
   return EDITION_OPTIONS.find((item) => item.id === edition) || ALL_DESKS_META;
 }
 
-const SESSION_PREF_KEY = 'maheep_edition_pref_v1';
+const EDITION_PREF_STORAGE_KEY = 'maheep_edition_pref_v1';
 
 interface StoredEditionPref {
   edition: NewsEdition;
@@ -61,7 +61,9 @@ interface StoredEditionPref {
 
 function readStoredEditionPref(): StoredEditionPref {
   try {
-    const raw = sessionStorage.getItem(SESSION_PREF_KEY);
+    const raw =
+      localStorage.getItem(EDITION_PREF_STORAGE_KEY) ||
+      sessionStorage.getItem(EDITION_PREF_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<StoredEditionPref>;
       const validEd =
@@ -86,8 +88,14 @@ function readStoredEditionPref(): StoredEditionPref {
 }
 
 function writeStoredEditionPref(pref: StoredEditionPref): void {
+  const serialized = JSON.stringify(pref);
   try {
-    sessionStorage.setItem(SESSION_PREF_KEY, JSON.stringify(pref));
+    localStorage.setItem(EDITION_PREF_STORAGE_KEY, serialized);
+  } catch {
+    // Ignore storage failure
+  }
+  try {
+    sessionStorage.setItem(EDITION_PREF_STORAGE_KEY, serialized);
   } catch {
     // Ignore storage failure
   }
@@ -100,6 +108,7 @@ interface PortalContextValue {
   toggleDarkMode: () => void;
   fontSize: FontSizeScale;
   setFontSize: (size: FontSizeScale) => void;
+  cities: CityItem[];
   selectedEdition: NewsEdition;
   selectedDate: string;
   selectedLocalState: string;
@@ -110,6 +119,7 @@ interface PortalContextValue {
   setSelectedDate: (date: string) => void;
   setSelectedLocalState: (stateSlug: string) => void;
   setSelectedLocalCity: (citySlug: string) => void;
+  selectCityEdition: (citySlug: string, stateSlug?: string) => void;
   reopenEditionPicker: () => void;
   adminToken: string | null;
   adminUser: AdminUser | null;
@@ -139,6 +149,7 @@ export function PortalProvider({ children }: { children: React.ReactNode }) {
   });
 
   const [initialPref] = useState<StoredEditionPref>(() => readStoredEditionPref());
+  const [cities, setCities] = useState<CityItem[]>([]);
   const [selectedEdition, setSelectedEditionState] = useState<NewsEdition>(initialPref.edition);
   const [selectedDate, setSelectedDateState] = useState<string>(initialPref.date);
   const [selectedLocalState, setSelectedLocalStateState] = useState<string>(initialPref.localState);
@@ -151,6 +162,21 @@ export function PortalProvider({ children }: { children: React.ReactNode }) {
   const [readerToken, setReaderToken] = useState<string | null>(null);
   const [readerUser, setReaderUser] = useState<ReaderUser | null>(null);
   const [readerDrawerOpen, setReaderDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/cities?limit=400')
+      .then((r) => (r.ok ? r.json() : { cities: [] }))
+      .then((json) => {
+        if (active && Array.isArray(json.cities)) {
+          setCities(json.cities);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -228,6 +254,33 @@ export function PortalProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
+  const selectCityEdition = (citySlug: string, stateSlug?: string) => {
+    if (!citySlug) {
+      setSelectedLocalCityState('');
+      writeStoredEditionPref({
+        edition: selectedEdition,
+        date: selectedDate,
+        localState: selectedLocalState,
+        localCity: '',
+        done: true,
+      });
+      return;
+    }
+    const matched = cities.find((c) => c.slug === citySlug);
+    const nextState = stateSlug ?? matched?.state_slug ?? selectedLocalState;
+    setSelectedEditionState('local');
+    setSelectedLocalStateState(nextState);
+    setSelectedLocalCityState(citySlug);
+    setEditionSetupDone(true);
+    writeStoredEditionPref({
+      edition: 'local',
+      date: selectedDate,
+      localState: nextState,
+      localCity: citySlug,
+      done: true,
+    });
+  };
+
   const reopenEditionPicker = () => {
     setEditionSetupDone(false);
     writeStoredEditionPref({
@@ -276,6 +329,7 @@ export function PortalProvider({ children }: { children: React.ReactNode }) {
         toggleDarkMode,
         fontSize,
         setFontSize,
+        cities,
         selectedEdition,
         selectedDate,
         selectedLocalState,
@@ -286,6 +340,7 @@ export function PortalProvider({ children }: { children: React.ReactNode }) {
         setSelectedDate,
         setSelectedLocalState,
         setSelectedLocalCity,
+        selectCityEdition,
         reopenEditionPicker,
         adminToken,
         adminUser,

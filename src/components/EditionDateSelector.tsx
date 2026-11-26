@@ -1,14 +1,9 @@
 import { ArrowLeft, ArrowRight, BookOpen, Calendar, Globe, Landmark, MapPin, RotateCcw } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import {
-  ALL_DESKS_META,
-  EDITION_OPTIONS,
-  type NewsEdition,
-  getEditionMeta,
-  usePortal,
-} from '../context/PortalContext.tsx';
+import { ALL_DESKS_META, EDITION_OPTIONS, type NewsEdition, getEditionMeta, usePortal } from '../context/PortalContext.tsx';
 import type { CityItem, StateItem } from '../types/news.ts';
+import { CitySelector } from './CitySelector.tsx';
 
 interface EditionDateRow {
   date: string;
@@ -48,6 +43,7 @@ interface EditionDateSelectorProps {
 export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
   const {
     language,
+    cities,
     selectedEdition,
     selectedDate,
     selectedLocalState,
@@ -57,7 +53,7 @@ export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
     setSelectedEdition,
     setSelectedDate,
     setSelectedLocalState,
-    setSelectedLocalCity,
+    selectCityEdition,
     reopenEditionPicker,
   } = usePortal();
 
@@ -72,22 +68,6 @@ export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
   const [customDate, setCustomDate] = useState<string>(selectedDate);
   const [datesInfo, setDatesInfo] = useState<EditionDatesResponse | null>(null);
   const [loadingDates, setLoadingDates] = useState(false);
-  const [cities, setCities] = useState<CityItem[]>([]);
-
-  useEffect(() => {
-    let active = true;
-    fetch('/api/cities?limit=400')
-      .then((r) => (r.ok ? r.json() : { cities: [] }))
-      .then((json) => {
-        if (active && Array.isArray(json.cities)) {
-          setCities(json.cities);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
 
   // Keep local custom date synced with active selectedDate
   useEffect(() => {
@@ -109,15 +89,11 @@ export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
   const queryState = editionSetupDone ? selectedLocalState : draftLocalState;
   const queryCity = editionSetupDone ? selectedLocalCity : draftLocalCity;
 
-  const wizardFilteredCities = useMemo(() => {
-    if (!draftLocalState) return cities;
-    return cities.filter((c) => c.state_slug === draftLocalState);
-  }, [cities, draftLocalState]);
-
-  const toolbarFilteredCities = useMemo(() => {
-    if (!selectedLocalState) return cities;
-    return cities.filter((c) => c.state_slug === selectedLocalState);
-  }, [cities, selectedLocalState]);
+  const quickSelectCities = useMemo(() => {
+    const slugs = ['mumbai', 'delhi', 'bengaluru', 'hyderabad', 'chennai', 'kolkata', 'pune', 'jaipur', 'lucknow'];
+    const map = new Map(cities.map((c) => [c.slug, c]));
+    return slugs.map((s) => map.get(s)).filter((c): c is CityItem => Boolean(c));
+  }, [cities]);
 
   useEffect(() => {
     let active = true;
@@ -279,6 +255,57 @@ export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
                 );
               })}
             </div>
+
+            {cities.length > 0 && (
+              <div className="pt-5 border-t border-neutral-200 dark:border-neutral-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 whitespace-nowrap">
+                    City Selector (Our Pride · {cities.length} Cities):
+                  </span>
+                  <CitySelector
+                    value={draftEdition === 'local' ? draftLocalCity : ''}
+                    onChange={(city) => {
+                      setDraftEdition('local');
+                      if (city) {
+                        setDraftLocalState(city.state_slug || '');
+                        setDraftLocalCity(city.slug);
+                        setStep(2);
+                      } else {
+                        setDraftLocalState('');
+                        setDraftLocalCity('');
+                      }
+                    }}
+                    placeholder="Choose your city..."
+                    variant="inline"
+                    ariaLabel="Jump directly to a city edition"
+                  />
+                </div>
+
+                {quickSelectCities.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {quickSelectCities.map((ct) => (
+                      <button
+                        key={ct.id}
+                        type="button"
+                        onClick={() => {
+                          setDraftEdition('local');
+                          setDraftLocalState(ct.state_slug || '');
+                          setDraftLocalCity(ct.slug);
+                          setStep(2);
+                        }}
+                        className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors whitespace-nowrap ${
+                          draftEdition === 'local' && draftLocalCity === ct.slug
+                            ? 'bg-[#00652E] text-white border-[#00652E]'
+                            : 'bg-white dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800 hover:border-[#00652E]'
+                        }`}
+                      >
+                        {ct.name.replace(' (town)', '')}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div className="pt-7 space-y-6">
@@ -339,25 +366,24 @@ export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
 
                 {cities.length > 0 && (
                   <div className="flex flex-col gap-1">
-                    <label
-                      htmlFor="wizard-local-city"
-                      className="text-xs font-semibold text-neutral-700 dark:text-neutral-200"
-                    >
-                      City Edition · Our Pride ({wizardFilteredCities.length} Cities)
-                    </label>
-                    <select
-                      id="wizard-local-city"
+                    <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-200">
+                      City Edition · Our Pride ({cities.length} Cities)
+                    </span>
+                    <CitySelector
                       value={draftLocalCity}
-                      onChange={(e) => setDraftLocalCity(e.target.value)}
-                      className="px-3 py-2 text-sm rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100"
-                    >
-                      <option value="">All Cities in Region</option>
-                      {wizardFilteredCities.map((ct) => (
-                        <option key={ct.id} value={ct.slug}>
-                          #{ct.rank} {ct.name.replace(' (town)', '')} ({ct.state_name})
-                        </option>
-                      ))}
-                    </select>
+                      stateFilter={draftLocalState}
+                      onChange={(city) => {
+                        if (city) {
+                          setDraftLocalCity(city.slug);
+                          if (city.state_slug) setDraftLocalState(city.state_slug);
+                        } else {
+                          setDraftLocalCity('');
+                        }
+                      }}
+                      placeholder="All Cities in Region"
+                      variant="inline"
+                      ariaLabel="Filter Our Pride edition by city"
+                    />
                   </div>
                 )}
               </div>
@@ -483,7 +509,7 @@ export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
       aria-label="Active edition and date controls"
       className="border border-neutral-200 dark:border-neutral-800 rounded-lg bg-[#FBF9F5] dark:bg-neutral-900 p-4 space-y-3"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2.5 text-xs">
           <span className="inline-flex items-center gap-1.5 font-editorial text-base font-bold text-neutral-950 dark:text-white">
             {selectedEdition !== 'all' && getEditionIcon(selectedEdition, 'w-4 h-4 text-[#00652E] dark:text-[#4ade80]')}
@@ -497,46 +523,14 @@ export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={reopenEditionPicker}
-          className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline whitespace-nowrap"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          Open Guided Picker
-        </button>
-      </div>
-
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-        {/* Edition Segmented Switcher */}
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Switch news edition">
-          {allSwitcherOptions.map((opt) => {
-            const active = selectedEdition === opt.id;
-            return (
-              <button
-                key={opt.id}
-                type="button"
-                onClick={() => setSelectedEdition(opt.id)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  active
-                    ? 'bg-[#00652E] text-white font-semibold'
-                    : 'bg-white dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-800 hover:border-[#00652E]'
-                }`}
-              >
-                {opt.label} <span className={active ? 'text-[#EAF5E5]' : 'text-neutral-400'}>({opt.sub})</span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Date & Optional Local State / City Controls */}
+        {/* Desktop Local City/State Filter OR Quick E-Paper & Setup action */}
         <div className="flex flex-wrap items-center gap-2">
           {selectedEdition === 'local' && states.length > 0 && (
             <select
               aria-label="Filter local news by state or union territory"
               value={selectedLocalState}
               onChange={(e) => setSelectedLocalState(e.target.value)}
-              className="px-2.5 py-1.5 text-xs rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-neutral-800 dark:text-neutral-200 max-w-[160px]"
+              className="px-2.5 py-1.5 text-xs rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-neutral-800 dark:text-neutral-200 max-w-[165px]"
             >
               <option value="">All States &amp; UTs</option>
               {states.map((st) => (
@@ -547,31 +541,63 @@ export function EditionDateSelector({ states = [] }: EditionDateSelectorProps) {
             </select>
           )}
 
-          {selectedEdition === 'local' && cities.length > 0 && (
+          {cities.length > 0 && (
             <>
-              <select
-                aria-label="Filter Our Pride news by city"
-                value={selectedLocalCity}
-                onChange={(e) => setSelectedLocalCity(e.target.value)}
-                className="px-2.5 py-1.5 text-xs rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-neutral-800 dark:text-neutral-200 max-w-[175px]"
-              >
-                <option value="">All {toolbarFilteredCities.length} Cities</option>
-                {toolbarFilteredCities.map((ct) => (
-                  <option key={ct.id} value={ct.slug}>
-                    {ct.name.replace(' (town)', '')} ({ct.state_code || ct.state_name})
-                  </option>
-                ))}
-              </select>
-              <Link
-                to={`/epaper?section=our-pride${selectedLocalCity ? `&city=${encodeURIComponent(selectedLocalCity)}` : ''}${selectedDate ? `&date=${encodeURIComponent(selectedDate)}` : ''}`}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md bg-[#EAF5E5] dark:bg-[#00451F]/40 text-[#00652E] dark:text-[#4ade80] border border-[#00652E]/30 hover:bg-[#00652E] hover:text-white transition-colors whitespace-nowrap"
-              >
-                <BookOpen className="w-3.5 h-3.5" />
-                City E-Paper
-              </Link>
+              <CitySelector
+                value={selectedEdition === 'local' ? selectedLocalCity : ''}
+                stateFilter={selectedEdition === 'local' ? selectedLocalState : ''}
+                onChange={(city) => selectCityEdition(city?.slug || '', city?.state_slug || '')}
+                placeholder="City Selector"
+                variant="inline"
+                align="right"
+                ariaLabel="Filter news by Indian city"
+              />
+              {selectedEdition === 'local' && (
+                <Link
+                  to={`/epaper?section=our-pride${selectedLocalCity ? `&city=${encodeURIComponent(selectedLocalCity)}` : ''}${selectedDate ? `&date=${encodeURIComponent(selectedDate)}` : ''}`}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md bg-[#EAF5E5] dark:bg-[#00451F]/40 text-[#00652E] dark:text-[#4ade80] border border-[#00652E]/30 hover:bg-[#00652E] hover:text-white transition-colors whitespace-nowrap"
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  City E-Paper
+                </Link>
+              )}
             </>
           )}
 
+          <button
+            type="button"
+            onClick={reopenEditionPicker}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline whitespace-nowrap"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            Change Desk / Date
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile-only quick edition & date controls (desktop uses sticky header controls) */}
+      <div className="md:hidden pt-3 border-t border-neutral-200 dark:border-neutral-800 space-y-2.5">
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Switch news edition on mobile">
+          {allSwitcherOptions.map((opt) => {
+            const active = selectedEdition === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setSelectedEdition(opt.id)}
+                className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  active
+                    ? 'bg-[#00652E] text-white font-semibold'
+                    : 'bg-white dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-800 hover:border-[#00652E]'
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex items-center rounded-md bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 p-0.5">
             <button
               type="button"
