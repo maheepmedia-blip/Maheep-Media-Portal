@@ -1,7 +1,7 @@
 import { ArrowUp, BookOpen, Compass, Home, MapPin, Menu, Moon, Search, Sun, User, WifiOff, X } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { usePortal } from '../context/PortalContext.tsx';
+import { getEditionMeta, usePortal } from '../context/PortalContext.tsx';
 import type { Article } from '../types/news.ts';
 import { getIndiaClockParts } from '../utils/date.ts';
 import { captureUtmParams, trackGrowthEvent } from '../utils/utm.ts';
@@ -14,7 +14,18 @@ interface PublicLayoutProps {
 }
 
 export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps) {
-  const { language, setLanguage, darkMode, toggleDarkMode, readerUser, setReaderDrawerOpen } = usePortal();
+  const {
+    language,
+    setLanguage,
+    darkMode,
+    toggleDarkMode,
+    readerUser,
+    setReaderDrawerOpen,
+    selectedEdition,
+    selectedDate,
+    editionSetupDone,
+    reopenEditionPicker,
+  } = usePortal();
   const [clock, setClock] = useState(() => getIndiaClockParts());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -276,9 +287,32 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
                 MAHEEP NEWS PORTAL
               </h1>
             </div>
-            <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-              News from India &amp; Beyond · All 28 States &amp; 8 Union Territories
-            </p>
+            <div className="flex flex-col md:items-end gap-1">
+              <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                News from India &amp; Beyond · All 28 States &amp; 8 Union Territories
+              </p>
+              {editionSetupDone && (
+                <div className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+                  <span>
+                    Active Desk:{' '}
+                    <strong className="text-neutral-900 dark:text-neutral-100">
+                      {getEditionMeta(selectedEdition).brand}
+                    </strong>
+                    {selectedDate ? ` · ${selectedDate}` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      reopenEditionPicker();
+                      if (location.pathname !== '/') navigate('/');
+                    }}
+                    className="font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
+                  >
+                    Change Edition / Date
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

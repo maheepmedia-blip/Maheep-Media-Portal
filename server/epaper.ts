@@ -39,10 +39,11 @@ export function generateEditionForDate(editionDate: string) {
   let published = db
     .prepare(`
       SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
-             c.name as category_name, c.slug as category_slug, s.name as state_name
+             a.state_id, a.city_id, c.name as category_name, c.slug as category_slug, s.name as state_name, ct.name as city_name, ct.slug as city_slug
       FROM articles a
       LEFT JOIN categories c ON c.id = a.category_id
       LEFT JOIN states s ON s.id = a.state_id
+      LEFT JOIN cities ct ON ct.id = a.city_id
       WHERE a.status = 'published'
         AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
       ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC, a.featured DESC, a.breaking DESC
@@ -56,10 +57,11 @@ export function generateEditionForDate(editionDate: string) {
     const recentExtra = db
       .prepare(`
         SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
-               c.name as category_name, c.slug as category_slug, s.name as state_name
+               a.state_id, a.city_id, c.name as category_name, c.slug as category_slug, s.name as state_name, ct.name as city_name, ct.slug as city_slug
         FROM articles a
         LEFT JOIN categories c ON c.id = a.category_id
         LEFT JOIN states s ON s.id = a.state_id
+        LEFT JOIN cities ct ON ct.id = a.city_id
         WHERE a.status = 'published'
           AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) <= date(?)
           AND datetime(a.published_at) >= datetime(?, '-2 days')
@@ -115,6 +117,8 @@ interface EditionArticleData {
   author: string;
   category_name: string;
   state_name?: string;
+  city_name?: string;
+  city_slug?: string;
   subtopic?: string;
   image_url?: string;
   image_rights?: string;
@@ -233,6 +237,7 @@ export function renderEditionPrintableHtml(edition: {
           const showImg = Boolean(art.image_url) && (idx === 0 || idx === 1);
           const metaParts = [
             art.category_name || 'News',
+            art.city_name || '',
             art.state_name || '',
             art.subtopic || '',
             art.source_name || 'Maheep Desk',

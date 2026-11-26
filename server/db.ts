@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { CENSUS_CITIES } from './citiesData.ts';
 
 const DATA_DIR = path.resolve(
   process.env.DATA_DIR?.trim() || process.env.RENDER_DISK_PATH?.trim() || path.join(process.cwd(), 'data'),
@@ -52,6 +53,23 @@ export function initDatabase(): void {
       type TEXT NOT NULL CHECK (type IN ('state', 'ut')),
       code TEXT NOT NULL UNIQUE
     );
+
+    CREATE TABLE IF NOT EXISTS cities (
+      id TEXT PRIMARY KEY,
+      rank INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      state_id TEXT REFERENCES states(id) ON DELETE SET NULL,
+      state_name TEXT NOT NULL,
+      is_capital INTEGER NOT NULL DEFAULT 0,
+      census_2011 INTEGER NOT NULL,
+      census_2001 INTEGER DEFAULT NULL,
+      change_pct TEXT DEFAULT '',
+      lat REAL NOT NULL,
+      lon REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cities_state ON cities(state_id, rank ASC);
+    CREATE INDEX IF NOT EXISTS idx_cities_rank ON cities(rank ASC);
 
     CREATE TABLE IF NOT EXISTS articles (
       id TEXT PRIMARY KEY,
@@ -466,6 +484,7 @@ export function initDatabase(): void {
   ensureColumn('articles', 'breaking_candidate', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('articles', 'preview_token', "TEXT DEFAULT ''");
   ensureColumn('articles', 'image_rights', "TEXT DEFAULT 'Editorial Attribution'");
+  ensureColumn('articles', 'city_id', 'TEXT DEFAULT NULL');
 
   ensureColumn('reader_users', 'streak_days', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('reader_users', 'last_read_date', "TEXT DEFAULT ''");
@@ -479,6 +498,7 @@ export function initDatabase(): void {
   ensureColumn('newsletter_subscribers', 'digest_frequency', "TEXT NOT NULL DEFAULT 'daily'");
 
   db.exec('CREATE INDEX IF NOT EXISTS idx_articles_scheduled ON articles(scheduled_at, unpublish_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_articles_city ON articles(city_id)');
 
   seedInitialData();
 }
@@ -558,11 +578,68 @@ function seedInitialData(): void {
     }
   }
 
+  // Ensure all Indian Census cities (Our Pride local edition) are seeded & up to date
+  const cityCount = (db.prepare('SELECT COUNT(*) as count FROM cities').get() as { count: number }).count;
+  if (cityCount < CENSUS_CITIES.length) {
+    const stateRows = db.prepare('SELECT id, name FROM states').all() as Array<{ id: string; name: string }>;
+    const stateMap = new Map(stateRows.map((s) => [s.name.toLowerCase(), s.id]));
+    const upsertCity = db.prepare(`
+      INSERT INTO cities (id, rank, name, slug, state_id, state_name, is_capital, census_2011, census_2001, change_pct, lat, lon)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(slug) DO UPDATE SET
+        rank = excluded.rank,
+        name = excluded.name,
+        state_id = excluded.state_id,
+        state_name = excluded.state_name,
+        is_capital = excluded.is_capital,
+        census_2011 = excluded.census_2011,
+        census_2001 = excluded.census_2001,
+        change_pct = excluded.change_pct,
+        lat = excluded.lat,
+        lon = excluded.lon
+    `);
+    const seedCitiesTx = db.transaction(() => {
+      for (const c of CENSUS_CITIES) {
+        const stateId = stateMap.get(c.stateName.toLowerCase()) || null;
+        upsertCity.run(
+          `city-${c.slug}`,
+          c.rank,
+          c.name,
+          c.slug,
+          stateId,
+          c.stateName,
+          c.isCapital ? 1 : 0,
+          c.census2011,
+          c.census2001,
+          c.changePct,
+          c.lat,
+          c.lon,
+        );
+      }
+    });
+    seedCitiesTx();
+  }
+
   const rssCount = (db.prepare('SELECT COUNT(*) as count FROM rss_sources').get() as { count: number }).count;
   if (rssCount === 0) {
     const insertRss = db.prepare(
       'INSERT INTO rss_sources (id, name, feed_url, language, category_id, enabled) VALUES (?, ?, ?, ?, ?, ?)',
     );
+    insertRss.run('rss-hindu-nat', 'The Hindu — National', 'https://www.thehindu.com/news/national/feeder/default.rss', 'en', 'cat-national', 1);
+    insertRss.run('rss-hindu-int', 'The Hindu — International', 'https://www.thehindu.com/news/international/feeder/default.rss', 'en', 'cat-international', 1);
+    insertRss.run('rss-hindu-biz', 'The Hindu — Business', 'https://www.thehindu.com/business/feeder/default.rss', 'en', 'cat-business', 1);
+    insertRss.run('rss-hindu-sport', 'The Hindu — Sport', 'https://www.thehindu.com/sport/feeder/default.rss', 'en', 'cat-sports', 1);
+    insertRss.run('rss-hindu-sci', 'The Hindu — Sci-Tech', 'https://www.thehindu.com/sci-tech/feeder/default.rss', 'en', 'cat-science', 1);
+    insertRss.run('rss-hindu-states', 'The Hindu — States', 'https://www.thehindu.com/news/states/feeder/default.rss', 'en', 'cat-state', 1);
+    insertRss.run('rss-hindu-cities', 'The Hindu — Cities', 'https://www.thehindu.com/news/cities/feeder/default.rss', 'en', 'cat-state', 1);
+    insertRss.run('rss-toi-top', 'Times of India — Top Stories', 'https://timesofindia.indiatimes.com/rssfeedstopstories.cms', 'en', 'cat-national', 1);
+    insertRss.run('rss-toi-india', 'Times of India — India', 'https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms', 'en', 'cat-national', 1);
+    insertRss.run('rss-bbc-india', 'BBC News — India', 'https://feeds.bbci.co.uk/news/world/asia/india/rss.xml', 'en', 'cat-national', 1);
+    insertRss.run('rss-bbc-world', 'BBC News — World', 'https://feeds.bbci.co.uk/news/world/rss.xml', 'en', 'cat-international', 1);
+    insertRss.run('rss-bbc-hi', 'BBC News — Hindi', 'https://feeds.bbci.co.uk/hindi/rss.xml', 'hi', 'cat-national', 1);
+    insertRss.run('rss-livemint-news', 'Livemint — News & Policy', 'https://www.livemint.com/rss/news', 'en', 'cat-business', 1);
+    insertRss.run('rss-news18-india', 'News18 — India', 'https://www.news18.com/commonfeeds/v1/eng/rss/india.xml', 'en', 'cat-national', 1);
+    insertRss.run('rss-amarujala-hi', 'Amar Ujala — India (Hindi)', 'https://www.amarujala.com/rss/india-news.xml', 'hi', 'cat-national', 1);
     insertRss.run('rss-gnews-en', 'Google News India (English)', 'https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-national', 1);
     insertRss.run('rss-gnews-hi', 'Google News India (Hindi)', 'https://news.google.com/rss?hl=hi&gl=IN&ceid=IN:hi', 'hi', 'cat-national', 1);
     insertRss.run('rss-gnews-biz', 'Google News India — Business', 'https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-IN&gl=IN&ceid=IN:en', 'en', 'cat-business', 1);
@@ -1496,6 +1573,132 @@ function seedInitialData(): void {
       setSetting(key, val);
     }
   }
+
+  // Backfill articles.city_id across existing articles & refresh stored E-Paper section titles to "Our Pride"
+  if (getSetting('our_pride_cities_v1', '') !== 'done') {
+    const cityRows = db
+      .prepare('SELECT id, name, slug, state_id FROM cities')
+      .all() as Array<{ id: string; name: string; slug: string; state_id: string | null }>;
+
+    const aliasMap: Record<string, string[]> = {
+      bengaluru: ['bengaluru', 'bangalore'],
+      mumbai: ['mumbai', 'bombay'],
+      kolkata: ['kolkata', 'calcutta'],
+      chennai: ['chennai', 'madras'],
+      delhi: ['new delhi', 'delhi'],
+      prayagraj: ['prayagraj', 'allahabad'],
+      gurgaon: ['gurgaon', 'gurugram'],
+      mysore: ['mysore', 'mysuru'],
+      mangalore: ['mangalore', 'mangaluru'],
+      belgaum: ['belgaum', 'belagavi'],
+      tiruchirappalli: ['tiruchirappalli', 'trichy'],
+      chhatrapati_sambhajinagar: ['chhatrapati sambhajinagar', 'sambhajinagar'],
+      'chhatrapati-sambhajinagar': ['chhatrapati sambhajinagar', 'sambhajinagar'],
+    };
+
+    const matchers: Array<{ cityId: string; stateId: string | null; regex: RegExp; len: number }> = [];
+    for (const c of cityRows) {
+      const clean = c.name.replace(/\s*\(town\)/i, '').trim().toLowerCase();
+      const terms = new Set<string>([clean, ...(aliasMap[c.slug] || [])]);
+      for (const term of terms) {
+        if (term.length < 3) continue;
+        const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        matchers.push({
+          cityId: c.id,
+          stateId: c.state_id,
+          regex: new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`, 'i'),
+          len: term.length,
+        });
+      }
+    }
+    matchers.sort((a, b) => b.len - a.len);
+
+    const untaggedArticles = db
+      .prepare('SELECT id, title, summary, content, state_id FROM articles WHERE city_id IS NULL')
+      .all() as Array<{ id: string; title: string; summary: string; content: string; state_id: string | null }>;
+
+    const updateCityStmt = db.prepare('UPDATE articles SET city_id = ?, state_id = COALESCE(state_id, ?) WHERE id = ?');
+    const backfillTx = db.transaction(() => {
+      for (const art of untaggedArticles) {
+        const hay = `${art.title} ${art.summary} ${art.content.slice(0, 600)}`;
+        let found: { cityId: string; stateId: string | null } | null = null;
+        for (const m of matchers) {
+          if (m.regex.test(hay)) {
+            if (!art.state_id || m.stateId === art.state_id) {
+              found = m;
+              break;
+            }
+            if (!found) found = m;
+          }
+        }
+        if (found) {
+          updateCityStmt.run(found.cityId, found.stateId, art.id);
+        }
+      }
+    });
+    backfillTx();
+
+    // Refresh existing editions so the local broadsheet section reflects "Our Pride · Local & City Dispatches"
+    const existingEds = db
+      .prepare('SELECT id, edition_date FROM editions')
+      .all() as Array<{ id: string; edition_date: string }>;
+    const findDayArts = db.prepare(`
+      SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
+             a.state_id, a.city_id, c.name as category_name, c.slug as category_slug, s.name as state_name, ct.name as city_name, ct.slug as city_slug
+      FROM articles a
+      LEFT JOIN categories c ON c.id = a.category_id
+      LEFT JOIN states s ON s.id = a.state_id
+      LEFT JOIN cities ct ON ct.id = a.city_id
+      WHERE a.status = 'published'
+        AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+      ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC, a.featured DESC, a.breaking DESC
+      LIMIT 40
+    `);
+    const updateEdStmt = db.prepare(
+      'UPDATE editions SET cover_image = ?, page_count = ?, article_count = ?, content_json = ? WHERE id = ?',
+    );
+    for (const ed of existingEds) {
+      const dayArticles = findDayArts.all(ed.edition_date) as Array<Record<string, unknown>>;
+      if (dayArticles.length > 0) {
+        const pages = buildEditionPagesPayload(ed.edition_date, dayArticles);
+        const cover = String(
+          dayArticles.find((a) => Boolean(a.image_url))?.image_url ||
+            '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+        );
+        updateEdStmt.run(cover, pages.length, dayArticles.length, JSON.stringify({ pages }), ed.id);
+      }
+    }
+
+    setSetting('our_pride_cities_v1', 'done');
+  }
+
+  // Register verified direct high-resolution photojournalism RSS feeds in existing databases
+  if (getSetting('rss_photo_sources_v1', '') !== 'done') {
+    const insertPhotoRss = db.prepare(
+      'INSERT OR IGNORE INTO rss_sources (id, name, feed_url, language, category_id, enabled) VALUES (?, ?, ?, ?, ?, 1)',
+    );
+    const photoSources: Array<[string, string, string, string, string]> = [
+      ['rss-hindu-nat', 'The Hindu — National', 'https://www.thehindu.com/news/national/feeder/default.rss', 'en', 'cat-national'],
+      ['rss-hindu-int', 'The Hindu — International', 'https://www.thehindu.com/news/international/feeder/default.rss', 'en', 'cat-international'],
+      ['rss-hindu-biz', 'The Hindu — Business', 'https://www.thehindu.com/business/feeder/default.rss', 'en', 'cat-business'],
+      ['rss-hindu-sport', 'The Hindu — Sport', 'https://www.thehindu.com/sport/feeder/default.rss', 'en', 'cat-sports'],
+      ['rss-hindu-sci', 'The Hindu — Sci-Tech', 'https://www.thehindu.com/sci-tech/feeder/default.rss', 'en', 'cat-science'],
+      ['rss-hindu-states', 'The Hindu — States', 'https://www.thehindu.com/news/states/feeder/default.rss', 'en', 'cat-state'],
+      ['rss-hindu-cities', 'The Hindu — Cities', 'https://www.thehindu.com/news/cities/feeder/default.rss', 'en', 'cat-state'],
+      ['rss-toi-top', 'Times of India — Top Stories', 'https://timesofindia.indiatimes.com/rssfeedstopstories.cms', 'en', 'cat-national'],
+      ['rss-toi-india', 'Times of India — India', 'https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms', 'en', 'cat-national'],
+      ['rss-bbc-india', 'BBC News — India', 'https://feeds.bbci.co.uk/news/world/asia/india/rss.xml', 'en', 'cat-national'],
+      ['rss-bbc-world', 'BBC News — World', 'https://feeds.bbci.co.uk/news/world/rss.xml', 'en', 'cat-international'],
+      ['rss-bbc-hi', 'BBC News — Hindi', 'https://feeds.bbci.co.uk/hindi/rss.xml', 'hi', 'cat-national'],
+      ['rss-livemint-news', 'Livemint — News & Policy', 'https://www.livemint.com/rss/news', 'en', 'cat-business'],
+      ['rss-news18-india', 'News18 — India', 'https://www.news18.com/commonfeeds/v1/eng/rss/india.xml', 'en', 'cat-national'],
+      ['rss-amarujala-hi', 'Amar Ujala — India (Hindi)', 'https://www.amarujala.com/rss/india-news.xml', 'hi', 'cat-national'],
+    ];
+    for (const [id, name, url, lang, catId] of photoSources) {
+      insertPhotoRss.run(id, name, url, lang, catId);
+    }
+    setSetting('rss_photo_sources_v1', 'done');
+  }
 }
 
 export function buildEditionPagesPayload(dateStr: string, articles: Array<Record<string, unknown>>) {
@@ -1511,8 +1714,20 @@ export function buildEditionPagesPayload(dateStr: string, articles: Array<Record
     return picked;
   };
 
+  const takeLocalPride = (limit = 10) => {
+    const picked = remaining
+      .filter(
+        (a) =>
+          !usedIds.has(String(a.id || a.title || '')) &&
+          (String(a.category_slug || '') === 'state' || Boolean(a.state_id) || Boolean(a.city_id)),
+      )
+      .slice(0, limit);
+    for (const item of picked) usedIds.add(String(item.id || item.title || ''));
+    return picked;
+  };
+
   const nationalStories = takeByCat(['national', 'international', 'editorial'], 8);
-  const stateStories = takeByCat(['state'], 8);
+  const stateStories = takeLocalPride(10);
   const bizSports = takeByCat(['business', 'sports'], 8);
   const techEduSci = takeByCat(['technology', 'education', 'science', 'entertainment'], 8);
   const moreStories = remaining.filter((a) => !usedIds.has(String(a.id || a.title || ''))).slice(0, 8);
@@ -1520,7 +1735,7 @@ export function buildEditionPagesPayload(dateStr: string, articles: Array<Record
   const candidates = [
     { sectionTitle: 'Front Page · मुख्य पृष्ठ', subtitle: `Edition Date: ${dateStr}`, articles: coverStories },
     { sectionTitle: 'National & International · राष्ट्रीय एवं अंतर्राष्ट्रीय', subtitle: 'Parliament, Policy, Defence & Diplomacy', articles: nationalStories },
-    { sectionTitle: 'States & Union Territories · राज्य समाचार', subtitle: 'Regional Reports Across India', articles: stateStories },
+    { sectionTitle: 'Our Pride · Local & City Dispatches', subtitle: 'Everyday City & State Coverage Across India', articles: stateStories },
     { sectionTitle: 'Business & Sports · व्यापार और खेल', subtitle: 'Markets, Economy, Cricket & Athletics', articles: bizSports },
     { sectionTitle: 'Technology, Science & Education · तकनीक, विज्ञान एवं शिक्षा', subtitle: 'Innovation, Campuses & Culture', articles: techEduSci },
     { sectionTitle: 'Additional Dispatches · अन्य प्रमुख समाचार', subtitle: `More Reports for ${dateStr}`, articles: moreStories },

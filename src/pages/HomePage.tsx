@@ -2,11 +2,12 @@ import { ArrowRight, BookOpen, Compass, Download, Headphones, History, MapPin, T
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
+import { EditionDateSelector } from '../components/EditionDateSelector.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
 import { PollWidget } from '../components/PollWidget.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
-import { usePortal } from '../context/PortalContext.tsx';
+import { getEditionMeta, usePortal } from '../context/PortalContext.tsx';
 import type { Article, ContentGuide, Edition, GrowthConfig, StateItem } from '../types/news.ts';
 import { formatIndiaDate } from '../utils/date.ts';
 import { trackGrowthEvent } from '../utils/utm.ts';
@@ -29,7 +30,17 @@ interface HomePayload {
 }
 
 export function HomePage() {
-  const { language } = usePortal();
+  const {
+    language,
+    selectedEdition,
+    selectedDate,
+    selectedLocalState,
+    selectedLocalCity,
+    editionSetupDone,
+    setEditionAndDate,
+    setSelectedDate,
+    reopenEditionPicker,
+  } = usePortal();
   const [data, setData] = useState<HomePayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [newsletterEmail, setNewsletterEmail] = useState('');
@@ -41,7 +52,14 @@ export function HomePage() {
   useEffect(() => {
     let active = true;
     setLoading(true);
-    const qs = language !== 'all' ? `?lang=${language}` : '';
+    const params = new URLSearchParams();
+    if (language !== 'all') params.set('lang', language);
+    if (selectedEdition !== 'all') params.set('edition', selectedEdition);
+    if (selectedDate) params.set('date', selectedDate);
+    if (selectedEdition === 'local' && selectedLocalState) params.set('state', selectedLocalState);
+    if (selectedEdition === 'local' && selectedLocalCity) params.set('city', selectedLocalCity);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+
     Promise.all([
       fetch(`/api/home${qs}`).then((r) => r.json()),
       fetch('/api/guides').then((r) => (r.ok ? r.json() : { guides: [] })),
@@ -60,7 +78,7 @@ export function HomePage() {
     return () => {
       active = false;
     };
-  }, [language]);
+  }, [language, selectedEdition, selectedDate, selectedLocalState, selectedLocalCity]);
 
   const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,6 +98,17 @@ export function HomePage() {
     }
   };
 
+  const activeMeta = getEditionMeta(selectedEdition);
+  const epaperHref = (() => {
+    const qp = new URLSearchParams();
+    if (selectedEdition === 'local') {
+      qp.set('section', 'our-pride');
+      if (selectedLocalCity) qp.set('city', selectedLocalCity);
+    }
+    if (selectedDate) qp.set('date', selectedDate);
+    const qs = qp.toString();
+    return qs ? `/epaper?${qs}` : '/epaper';
+  })();
   const leadArticle = data?.featured?.[0] || data?.latest?.[0];
   const secondaryFeatured = (data?.featured || []).slice(1, 4);
   const featuredIds = new Set([leadArticle?.id, ...secondaryFeatured.map((a) => a.id)].filter(Boolean));
@@ -101,74 +130,109 @@ export function HomePage() {
     <PublicLayout breakingNews={data?.breaking || []}>
       <SeoHead
         title="Maheep News Portal — सच के साथ, जनता के विश्वास के साथ | News from India & Beyond"
-        description="Bilingual Hindi and English digital newspaper covering National affairs, all 28 Indian States and 8 Union Territories, Business, Sports, Technology, Education, and daily E-Paper."
+        description="Bilingual Hindi and English digital newspaper covering National affairs (The Beacon), International (WorldWire), Local States & UTs (Our Pride), Business, Sports, Technology, Education, and daily E-Paper."
         canonicalPath="/"
       />
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-12">
-        {/* CRO High-Converting Morning E-Paper & Daily Briefing Strip */}
-        {(growthConfig?.cro_sticky_bar_enabled ?? true) && (
-          <div className="rounded-lg bg-[#EAF5E5]/70 dark:bg-[#00451F]/30 border border-[#00652E]/25 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="text-xs sm:text-sm font-medium text-neutral-800 dark:text-neutral-100">
-              {growthConfig?.cro_cta_headline ||
-                'Get India’s verified morning E-Paper & top dispatches free every morning at 7 AM IST'}
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <Link
-                to="/epaper"
-                onClick={() => trackGrowthEvent('epaper_open', { cta_variant: 'cro_top_strip' })}
-                className="px-3.5 py-1.5 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold whitespace-nowrap transition-colors"
-              >
-                {growthConfig?.cro_cta_button || 'Get Free Daily E-Paper'}
-              </Link>
-              <Link
-                to="/guides"
-                className="px-3 py-1.5 rounded border border-[#00652E]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-white dark:hover:bg-neutral-900 whitespace-nowrap"
-              >
-                Citizen Guides
-              </Link>
-            </div>
-          </div>
-        )}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-10">
+        {/* Guided Edition -> Date Selection on First Visit, or Persistent Switcher Bar After Selection */}
+        <EditionDateSelector states={data?.states || []} />
 
-        <AdSlot placement="header_banner" />
-
-        {loading && !data ? (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-pulse">
-            <div className="lg:col-span-8 h-80 bg-neutral-200 dark:bg-neutral-800 rounded-lg" />
-            <div className="lg:col-span-4 h-80 bg-neutral-200 dark:bg-neutral-800 rounded-lg" />
-          </div>
-        ) : (
+        {!editionSetupDone ? null : (
           <>
-            {/* Tier 1: Lead Story + Trending Sidebar */}
-            <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-              <div className="lg:col-span-9 space-y-8">
-                {leadArticle ? (
-                  <NewsCard article={leadArticle} variant="lead" />
-                ) : (
-                  <div className="p-8 border border-neutral-200 dark:border-neutral-800 rounded-lg text-center text-neutral-500">
-                    No published stories available for this language filter yet.
-                  </div>
-                )}
-
-                {secondaryFeatured.length > 0 && (
-                  <div>
-                    <div className="flex items-center justify-between mb-4">
-                      <h2 className="font-editorial text-xl font-bold text-neutral-950 dark:text-white">
-                        Featured Dispatches
-                      </h2>
-                      <Link to="/search" className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline">
-                        Browse All Stories
-                      </Link>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-                      {secondaryFeatured.map((art) => (
-                        <NewsCard key={art.id} article={art} />
-                      ))}
-                    </div>
-                  </div>
-                )}
+            {/* CRO High-Converting Morning E-Paper & Daily Briefing Strip */}
+            {(growthConfig?.cro_sticky_bar_enabled ?? true) && (
+              <div className="rounded-lg bg-[#EAF5E5]/70 dark:bg-[#00451F]/30 border border-[#00652E]/25 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-xs sm:text-sm font-medium text-neutral-800 dark:text-neutral-100">
+                  {growthConfig?.cro_cta_headline ||
+                    'Get India’s verified morning E-Paper & top dispatches free every morning at 7 AM IST'}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Link
+                    to={epaperHref}
+                    onClick={() => trackGrowthEvent('epaper_open', { cta_variant: 'cro_top_strip' })}
+                    className="px-3.5 py-1.5 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold whitespace-nowrap transition-colors"
+                  >
+                    {growthConfig?.cro_cta_button || 'Get Free Daily E-Paper'}
+                  </Link>
+                  <Link
+                    to="/guides"
+                    className="px-3 py-1.5 rounded border border-[#00652E]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-white dark:hover:bg-neutral-900 whitespace-nowrap"
+                  >
+                    Citizen Guides
+                  </Link>
+                </div>
               </div>
+            )}
+
+            <AdSlot placement="header_banner" />
+
+            {loading && !data ? (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-pulse">
+                <div className="lg:col-span-8 h-80 bg-neutral-200 dark:bg-neutral-800 rounded-lg" />
+                <div className="lg:col-span-4 h-80 bg-neutral-200 dark:bg-neutral-800 rounded-lg" />
+              </div>
+            ) : (
+              <>
+                {/* Tier 1: Lead Story + Trending Sidebar */}
+                <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+                  <div className="lg:col-span-9 space-y-8">
+                    {leadArticle ? (
+                      <NewsCard article={leadArticle} variant="lead" />
+                    ) : (
+                      <div className="p-8 border border-neutral-200 dark:border-neutral-800 rounded-lg text-center space-y-4 bg-white dark:bg-neutral-900">
+                        <h2 className="font-editorial text-2xl font-bold text-neutral-950 dark:text-white">
+                          No {activeMeta.brand} dispatches found{selectedDate ? ` for ${selectedDate}` : ''}
+                        </h2>
+                        <p className="text-sm text-neutral-600 dark:text-neutral-400 max-w-md mx-auto">
+                          Try viewing all recent dates for {activeMeta.brand}, switching to another desk, or adjusting your language filter.
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                          {selectedDate && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedDate('')}
+                              className="px-4 py-2 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold"
+                            >
+                              Show All Dates for {activeMeta.brand}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setEditionAndDate('all', '', '')}
+                            className="px-4 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 text-xs font-semibold hover:border-[#00652E]"
+                          >
+                            Browse All Desks
+                          </button>
+                          <button
+                            type="button"
+                            onClick={reopenEditionPicker}
+                            className="px-4 py-2 rounded border border-[#00652E]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-[#EAF5E5]/50"
+                          >
+                            Reopen Guided Picker
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {secondaryFeatured.length > 0 && (
+                      <div>
+                        <div className="flex items-center justify-between mb-4">
+                          <h2 className="font-editorial text-xl font-bold text-neutral-950 dark:text-white">
+                            {selectedEdition === 'all' ? 'Featured Dispatches' : `${activeMeta.brand} — Featured Dispatches`}
+                          </h2>
+                          <Link to="/search" className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline">
+                            Browse All Stories
+                          </Link>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                          {secondaryFeatured.map((art) => (
+                            <NewsCard key={art.id} article={art} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
               {/* Right Column: Trending & Daily E-Paper Preview */}
               <aside className="lg:col-span-3 space-y-8">
@@ -218,7 +282,7 @@ export function HomePage() {
                     </p>
                     <div className="mt-4 flex flex-wrap gap-2">
                       <Link
-                        to="/epaper"
+                        to={epaperHref}
                         className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded bg-[#00652E] text-white text-xs font-semibold hover:bg-[#00451F] transition-colors whitespace-nowrap"
                       >
                         Read E-Paper
@@ -267,24 +331,26 @@ export function HomePage() {
             </section>
 
             {/* Tier 2: Latest News Grid */}
-            <section className="pt-4 border-t border-neutral-200 dark:border-neutral-800">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="font-editorial text-2xl font-bold text-neutral-950 dark:text-white">
-                  Latest News
-                </h2>
-                <Link
-                  to="/search"
-                  className="inline-flex items-center gap-1 text-sm font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
-                >
-                  All Latest <ArrowRight className="w-4 h-4" />
-                </Link>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                {latestFeed.slice(0, 4).map((art) => (
-                  <NewsCard key={art.id} article={art} />
-                ))}
-              </div>
-            </section>
+            {latestFeed.length > 0 && (
+              <section className="pt-4 border-t border-neutral-200 dark:border-neutral-800">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="font-editorial text-2xl font-bold text-neutral-950 dark:text-white">
+                    {selectedEdition === 'all' ? 'Latest News' : `${activeMeta.brand} — More Stories`}
+                  </h2>
+                  <Link
+                    to="/search"
+                    className="inline-flex items-center gap-1 text-sm font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
+                  >
+                    All Latest <ArrowRight className="w-4 h-4" />
+                  </Link>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  {latestFeed.slice(0, selectedEdition === 'all' ? 4 : 8).map((art) => (
+                    <NewsCard key={art.id} article={art} />
+                  ))}
+                </div>
+              </section>
+            )}
 
             <AdSlot placement="homepage_mid" />
 
@@ -476,6 +542,8 @@ export function HomePage() {
                 )}
               </div>
             )}
+          </>
+        )}
           </>
         )}
       </div>

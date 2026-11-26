@@ -15,6 +15,25 @@ export interface StateItem {
   article_count?: number;
 }
 
+export interface CityItem {
+  id: string;
+  rank: number;
+  name: string;
+  slug: string;
+  state_id: string | null;
+  state_name: string;
+  state_slug?: string | null;
+  state_type?: string | null;
+  state_code?: string | null;
+  is_capital: number | boolean;
+  census_2011: number;
+  census_2001: number | null;
+  change_pct: string;
+  lat: number;
+  lon: number;
+  article_count?: number;
+}
+
 export interface Article {
   id: string;
   title: string;
@@ -35,6 +54,9 @@ export interface Article {
   state_slug?: string;
   state_type?: 'state' | 'ut';
   state_code?: string;
+  city_id?: string | null;
+  city_name?: string;
+  city_slug?: string;
   subtopic?: string;
   status: 'draft' | 'pending' | 'published' | 'archived';
   featured: number | boolean;
@@ -103,6 +125,8 @@ export interface EditionPage {
     author: string;
     category_name: string;
     state_name?: string;
+    city_name?: string;
+    city_slug?: string;
     subtopic?: string;
     image_url?: string;
     image_rights?: string;

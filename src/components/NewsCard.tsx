@@ -10,8 +10,10 @@ interface NewsCardProps {
 }
 
 export function NewsCard({ article, variant = 'standard' }: NewsCardProps) {
+  const cleanCity = article.city_name ? article.city_name.replace(' (town)', '') : '';
   const metaItems = [
     article.category_name || 'News',
+    cleanCity && cleanCity !== article.state_name ? cleanCity : '',
     article.state_name,
     article.source_name,
     formatIndiaDate(article.published_at),
@@ -44,15 +46,22 @@ export function NewsCard({ article, variant = 'standard' }: NewsCardProps) {
   if (variant === 'lead') {
     return (
       <article className="group grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch pb-8 border-b border-neutral-200 dark:border-neutral-800">
-        <div className="lg:col-span-7 overflow-hidden rounded-lg bg-neutral-100 dark:bg-neutral-900 aspect-[16/10] lg:aspect-auto lg:min-h-[340px]">
-          <Link to={`/news/${article.slug}`} className="block w-full h-full">
-            <ArticleImage
-              src={article.image_url}
-              alt={article.title}
-              category={article.category_name}
-              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-            />
-          </Link>
+        <div className="lg:col-span-7 flex flex-col">
+          <div className="overflow-hidden rounded-lg bg-neutral-100 dark:bg-neutral-900 aspect-[16/10] lg:flex-1 lg:min-h-[340px]">
+            <Link to={`/news/${article.slug}`} className="block w-full h-full">
+              <ArticleImage
+                src={article.image_url}
+                alt={article.title}
+                category={article.category_name}
+                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+              />
+            </Link>
+          </div>
+          {article.image_rights && (
+            <p className="mt-1.5 text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
+              {article.image_rights}
+            </p>
+          )}
         </div>
         <div className="lg:col-span-5 flex flex-col justify-between py-1">
           <div>
@@ -107,6 +116,12 @@ export function NewsCard({ article, variant = 'standard' }: NewsCardProps) {
         <div>
           <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-xs text-neutral-500 dark:text-neutral-400 mb-2">
             <span className="font-semibold text-[#00652E] dark:text-[#4ade80]">{article.category_name || 'News'}</span>
+            {cleanCity && cleanCity !== article.state_name && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{cleanCity}</span>
+              </>
+            )}
             {article.state_name && (
               <>
                 <span aria-hidden="true">·</span>

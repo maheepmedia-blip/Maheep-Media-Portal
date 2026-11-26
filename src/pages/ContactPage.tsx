@@ -1,5 +1,6 @@
 import { CheckCircle2, Mail, MapPin, Phone } from 'lucide-react';
 import React, { useState } from 'react';
+import { EditorialBureauMap } from '../components/IndiaGoogleNewsMap.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 
@@ -92,6 +93,15 @@ export function ContactPage() {
                 </div>
               </div>
             </div>
+
+            {Boolean(import.meta.env.VITE_GOOGLE_MAPS_API_KEY) && (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-neutral-600 dark:text-neutral-400">
+                  Bureau Location Map · New Delhi
+                </div>
+                <EditorialBureauMap />
+              </div>
+            )}
           </div>
 
           <div className="lg:col-span-7">

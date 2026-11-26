@@ -49,8 +49,10 @@ import {
   requireReader,
 } from './readerAuth.ts';
 import {
+  backfillArticleRealPhotos,
   createSlug,
   fetchAndParseFeed,
+  fetchLiveCityWire,
   runAllEnabledRssSources,
   runSingleRssSource,
   syncDailyEditionsForRecentArticles,
@@ -62,7 +64,7 @@ import { getWeatherForecast } from './weather.ts';
 function sanitizeSafeUrl(raw: unknown): string {
   const s = String(raw || '').trim();
   if (!s) return '';
-  if (s.startsWith('/src/assets/') || s.startsWith('/uploads/')) return s;
+  if (s.startsWith('/src/assets/') || s.startsWith('/uploads/') || s.startsWith('/api/media/photo?')) return s;
   try {
     const u = new URL(s);
     if (u.protocol === 'https:' || u.protocol === 'http:') return u.toString();
@@ -126,10 +128,12 @@ function resolvePublicBaseUrl(req: Request): string {
 
 const ARTICLE_SELECT = `
   SELECT a.*, c.name as category_name, c.slug as category_slug,
-         s.name as state_name, s.slug as state_slug, s.type as state_type, s.code as state_code
+         s.name as state_name, s.slug as state_slug, s.type as state_type, s.code as state_code,
+         ct.name as city_name, ct.slug as city_slug
   FROM articles a
   LEFT JOIN categories c ON c.id = a.category_id
   LEFT JOIN states s ON s.id = a.state_id
+  LEFT JOIN cities ct ON ct.id = a.city_id
 `;
 
 export function registerApiRoutes(app: Express): void {
@@ -314,18 +318,232 @@ export function registerApiRoutes(app: Express): void {
     }
   });
 
+  const ALLOWED_MEDIA_HOSTS = new Set([
+    'upload.wikimedia.org',
+    'thumb.wikimedia.org',
+    'th-i.thgim.com',
+    'ichef.bbci.co.uk',
+    'static.toiimg.com',
+    'images.news18.com',
+    'www.livemint.com',
+    'www.hindustantimes.com',
+    'c.ndtvimg.com',
+    'www.aljazeera.com',
+    'images.indianexpress.com',
+    'akm-img-a-in.tosshub.com',
+    'static.amarujala.com',
+    'pib.gov.in',
+  ]);
+  const mediaCacheDir = path.join(uploadsDir, 'media-cache');
+  fs.mkdirSync(mediaCacheDir, { recursive: true });
+
+  app.get('/api/media/photo', async (req, res) => {
+    const rawUrl = String(req.query.u || '').trim();
+    if (!rawUrl) {
+      res.status(400).json({ error: 'Missing photo URL.' });
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      res.status(400).json({ error: 'Invalid photo URL.' });
+      return;
+    }
+    if (parsed.protocol !== 'https:' || !ALLOWED_MEDIA_HOSTS.has(parsed.hostname.toLowerCase())) {
+      res.status(403).json({ error: 'Photo host not in verified allowlist.' });
+      return;
+    }
+
+    const hash = crypto.createHash('sha256').update(parsed.toString()).digest('hex').slice(0, 32);
+    const cacheImgPath = path.join(mediaCacheDir, `${hash}.bin`);
+    const cacheMetaPath = path.join(mediaCacheDir, `${hash}.json`);
+
+    if (fs.existsSync(cacheImgPath) && fs.existsSync(cacheMetaPath)) {
+      try {
+        const meta = JSON.parse(fs.readFileSync(cacheMetaPath, 'utf8')) as { contentType?: string };
+        res.setHeader('Content-Type', meta.contentType || 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+        fs.createReadStream(cacheImgPath).pipe(res);
+        return;
+      } catch {
+        // Fall through to refresh cache
+      }
+    }
+
+    try {
+      const isWiki = parsed.hostname.endsWith('wikimedia.org');
+      const headers: Record<string, string> = isWiki
+        ? {
+            'User-Agent': 'MaheepNewsPortal/1.0 (https://maheepnews.in; maheepmedia@gmail.com)',
+            Accept: 'image/avif,image/webp,image/jpeg,image/png,image/*,*/*;q=0.8',
+          }
+        : {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            Referer: `${parsed.protocol}//${parsed.hostname}/`,
+            Accept: 'image/avif,image/webp,image/jpeg,image/png,image/*,*/*;q=0.8',
+          };
+
+      const upstream = await fetch(parsed.toString(), {
+        headers,
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!upstream.ok) {
+        res.status(upstream.status).end();
+        return;
+      }
+      const finalHost = new URL(upstream.url || parsed.toString()).hostname.toLowerCase();
+      if (!ALLOWED_MEDIA_HOSTS.has(finalHost)) {
+        res.status(403).end();
+        return;
+      }
+      const cType = (upstream.headers.get('content-type') || '').toLowerCase();
+      if (!cType.startsWith('image/')) {
+        res.status(415).end();
+        return;
+      }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      if (buf.byteLength < 1024 || buf.byteLength > 8 * 1024 * 1024) {
+        res.status(415).end();
+        return;
+      }
+
+      fs.writeFileSync(cacheImgPath, buf);
+      fs.writeFileSync(cacheMetaPath, JSON.stringify({ contentType: cType, source: parsed.toString() }));
+
+      res.setHeader('Content-Type', cType);
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+      res.send(buf);
+    } catch {
+      res.status(502).end();
+    }
+  });
+
+  app.post('/api/admin/rss/backfill-photos', requireAdmin, async (_req: AuthenticatedRequest, res) => {
+    const result = await backfillArticleRealPhotos();
+    res.json({ ok: true, ...result });
+  });
+
+  const buildEditionWhere = (editionRaw: string, stateRaw: string, cityRaw = '') => {
+    const edition = ['national', 'international', 'local', 'all'].includes(editionRaw) ? editionRaw : 'all';
+    const stateSlug = stateRaw.trim();
+    const citySlug = cityRaw.trim();
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+
+    if (edition === 'national') {
+      clauses.push("c.slug = 'national'");
+    } else if (edition === 'international') {
+      clauses.push("c.slug = 'international'");
+    } else if (edition === 'local') {
+      clauses.push("(c.slug = 'state' OR a.state_id IS NOT NULL OR a.city_id IS NOT NULL)");
+    }
+
+    if (stateSlug === 'any') {
+      clauses.push("(a.state_id IS NOT NULL OR c.slug = 'state' OR a.city_id IS NOT NULL)");
+    } else if (stateSlug && stateSlug !== 'all') {
+      clauses.push('s.slug = ?');
+      params.push(stateSlug);
+    }
+
+    if (citySlug && citySlug !== 'all') {
+      clauses.push('ct.slug = ?');
+      params.push(citySlug);
+    }
+
+    return {
+      edition,
+      sql: clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : '',
+      params,
+    };
+  };
+
+  app.get('/api/edition-dates', (req, res) => {
+    const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : null;
+    const editionRaw = String(req.query.edition || 'all').trim();
+    const stateRaw = String(req.query.state || '').trim();
+    const cityRaw = String(req.query.city || '').trim();
+    const ed = buildEditionWhere(editionRaw, stateRaw, cityRaw);
+
+    const conditions = ["a.status = 'published'", "a.published_at IS NOT NULL", "a.published_at != ''"];
+    const params: unknown[] = [...ed.params];
+    if (lang) {
+      conditions.push('a.language = ?');
+      params.push(lang);
+    }
+
+    const whereSql = `${conditions.join(' AND ')}${ed.sql}`;
+    const dates = db
+      .prepare(`
+        SELECT date(datetime(a.published_at, '+5 hours', '+30 minutes')) as date,
+               COUNT(*) as count
+        FROM articles a
+        LEFT JOIN categories c ON c.id = a.category_id
+        LEFT JOIN states s ON s.id = a.state_id
+        LEFT JOIN cities ct ON ct.id = a.city_id
+        WHERE ${whereSql}
+        GROUP BY date
+        HAVING date IS NOT NULL
+        ORDER BY date DESC
+        LIMIT 30
+      `)
+      .all(...params) as Array<{ date: string; count: number }>;
+
+    const todayIst = getTodayIndiaDate();
+    const yesterdayIst = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(Date.now() - 86_400_000));
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      edition: ed.edition,
+      todayIst,
+      yesterdayIst,
+      dates,
+    });
+  });
+
   app.get('/api/home', (req, res) => {
     const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : null;
-    const langClause = lang ? ' AND a.language = ?' : '';
-    const langParams = lang ? [lang] : [];
+    const editionRaw = String(req.query.edition || 'all').trim();
+    const stateRaw = String(req.query.state || '').trim();
+    const cityRaw = String(req.query.city || '').trim();
+    const dateRaw = String(req.query.date || '').trim();
+    const validDate = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : '';
+
+    const ed = buildEditionWhere(editionRaw, stateRaw, cityRaw);
+
+    const baseConditions = ["a.status = 'published'"];
+    const baseParams: unknown[] = [];
+
+    if (lang) {
+      baseConditions.push('a.language = ?');
+      baseParams.push(lang);
+    }
+
+    const dateClause = validDate
+      ? " AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)"
+      : '';
+    const dateParams = validDate ? [validDate] : [];
+
+    const fullWhere = `${baseConditions.join(' AND ')}${ed.sql}${dateClause}`;
+    const fullParams = [...baseParams, ...ed.params, ...dateParams];
+
+    const langOnlyClause = lang ? ' AND a.language = ?' : '';
+    const langOnlyParams = lang ? [lang] : [];
 
     const breaking = db
-      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' AND a.breaking = 1${langClause} ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 10`)
-      .all(...langParams);
+      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' AND a.breaking = 1${langOnlyClause}${ed.sql} ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 10`)
+      .all(...langOnlyParams, ...ed.params);
 
     const featured = db
-      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.featured DESC, a.breaking DESC, a.published_at DESC LIMIT 6`)
-      .all(...langParams) as Array<{ id: string }>;
+      .prepare(`${ARTICLE_SELECT} WHERE ${fullWhere} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN TRIM(COALESCE(a.image_url, '')) != '' AND a.image_url NOT LIKE '/src/assets/%' THEN 0 ELSE 1 END, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.featured DESC, a.breaking DESC, a.published_at DESC LIMIT 6`)
+      .all(...fullParams) as Array<{ id: string }>;
 
     const excludeFeaturedIds = featured.map((a) => a.id);
     const notFeaturedClause =
@@ -334,17 +552,17 @@ export function registerApiRoutes(app: Express): void {
         : '';
 
     const latest = db
-      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause}${notFeaturedClause} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 16`)
-      .all(...langParams, ...excludeFeaturedIds) as Array<{ id: string }>;
+      .prepare(`${ARTICLE_SELECT} WHERE ${fullWhere}${notFeaturedClause} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN TRIM(COALESCE(a.image_url, '')) != '' AND a.image_url NOT LIKE '/src/assets/%' THEN 0 ELSE 1 END, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 24`)
+      .all(...fullParams, ...excludeFeaturedIds) as Array<{ id: string }>;
 
     const trending = db
-      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause} ORDER BY a.views DESC, a.published_at DESC LIMIT 6`)
-      .all(...langParams);
+      .prepare(`${ARTICLE_SELECT} WHERE ${fullWhere} ORDER BY a.views DESC, a.published_at DESC LIMIT 6`)
+      .all(...fullParams);
 
     const querySection = (whereExtra: string, limit = 4) =>
       db
-        .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langClause}${notFeaturedClause} AND (${whereExtra}) ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT ?`)
-        .all(...langParams, ...excludeFeaturedIds, limit);
+        .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langOnlyClause}${dateClause}${notFeaturedClause} AND (${whereExtra}) ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN TRIM(COALESCE(a.image_url, '')) != '' AND a.image_url NOT LIKE '/src/assets/%' THEN 0 ELSE 1 END, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT ?`)
+        .all(...langOnlyParams, ...dateParams, ...excludeFeaturedIds, limit);
 
     const sections = {
       national: querySection("c.slug IN ('national', 'international')", 4),
@@ -366,9 +584,15 @@ export function registerApiRoutes(app: Express): void {
       `)
       .all();
 
-    const latestEdition = db
-      .prepare("SELECT id, edition_date, title, pdf_url, cover_image, page_count, article_count, status FROM editions WHERE status = 'published' ORDER BY edition_date DESC LIMIT 1")
-      .get();
+    const latestEdition =
+      (validDate
+        ? db
+            .prepare("SELECT id, edition_date, title, pdf_url, cover_image, page_count, article_count, status FROM editions WHERE status = 'published' AND edition_date = ? LIMIT 1")
+            .get(validDate)
+        : null) ||
+      db
+        .prepare("SELECT id, edition_date, title, pdf_url, cover_image, page_count, article_count, status FROM editions WHERE status = 'published' ORDER BY edition_date DESC LIMIT 1")
+        .get();
 
     res.setHeader('Cache-Control', 'no-store');
     res.json({
@@ -380,6 +604,11 @@ export function registerApiRoutes(app: Express): void {
       categories,
       states,
       latestEdition,
+      activeFilters: {
+        edition: ed.edition,
+        date: validDate,
+        state: stateRaw || '',
+      },
       settings: {
         tagline_hi: getSetting('tagline_hi', 'सच के साथ, जनता के विश्वास के साथ'),
         tagline_en: getSetting('tagline_en', 'News from India & Beyond'),
@@ -390,7 +619,9 @@ export function registerApiRoutes(app: Express): void {
   app.get('/api/articles', (req, res) => {
     const q = String(req.query.q || '').trim();
     const category = String(req.query.category || '').trim();
+    const edition = String(req.query.edition || '').trim();
     const state = String(req.query.state || '').trim();
+    const city = String(req.query.city || '').trim();
     const language = String(req.query.language || '').trim();
     const date = String(req.query.date || '').trim();
     const subtopic = String(req.query.subtopic || '').trim();
@@ -405,15 +636,26 @@ export function registerApiRoutes(app: Express): void {
       const pat = `%${q}%`;
       params.push(pat, pat, pat);
     }
+    if (edition === 'national') {
+      conditions.push("c.slug = 'national'");
+    } else if (edition === 'international') {
+      conditions.push("c.slug = 'international'");
+    } else if (edition === 'local') {
+      conditions.push("(c.slug = 'state' OR a.state_id IS NOT NULL OR a.city_id IS NOT NULL)");
+    }
     if (category && category !== 'all') {
       conditions.push('c.slug = ?');
       params.push(category);
     }
     if (state === 'any') {
-      conditions.push("(a.state_id IS NOT NULL OR c.slug = 'state')");
+      conditions.push("(a.state_id IS NOT NULL OR c.slug = 'state' OR a.city_id IS NOT NULL)");
     } else if (state && state !== 'all') {
       conditions.push('s.slug = ?');
       params.push(state);
+    }
+    if (city && city !== 'all') {
+      conditions.push('ct.slug = ?');
+      params.push(city);
     }
     if (language === 'en' || language === 'hi') {
       conditions.push('a.language = ?');
@@ -441,6 +683,7 @@ export function registerApiRoutes(app: Express): void {
         FROM articles a
         LEFT JOIN categories c ON c.id = a.category_id
         LEFT JOIN states s ON s.id = a.state_id
+        LEFT JOIN cities ct ON ct.id = a.city_id
         WHERE ${whereSql}
       `)
       .get(...params) as { total: number };
@@ -583,6 +826,197 @@ export function registerApiRoutes(app: Express): void {
       `)
       .all();
     res.json({ states: rows });
+  });
+
+  app.get('/api/cities', (req, res) => {
+    const stateSlug = String(req.query.state || '').trim();
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 400));
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (stateSlug && stateSlug !== 'all') {
+      conditions.push('s.slug = ?');
+      params.push(stateSlug);
+    }
+    if (q) {
+      conditions.push('(LOWER(ct.name) LIKE ? OR LOWER(ct.state_name) LIKE ?)');
+      params.push(`%${q}%`, `%${q}%`);
+    }
+
+    const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = db
+      .prepare(`
+        SELECT ct.*, s.slug as state_slug, s.type as state_type, s.code as state_code,
+               COUNT(a.id) as article_count
+        FROM cities ct
+        LEFT JOIN states s ON s.id = ct.state_id
+        LEFT JOIN articles a ON a.city_id = ct.id AND a.status = 'published'
+        ${whereSql}
+        GROUP BY ct.id
+        ORDER BY ct.rank ASC
+        LIMIT ?
+      `)
+      .all(...params, limit);
+
+    res.json({ cities: rows, total: rows.length });
+  });
+
+  app.get('/api/cities/:slug/our-pride', async (req, res) => {
+    const slug = String(req.params.slug || '').trim();
+    const city = db
+      .prepare(`
+        SELECT ct.*, s.slug as state_slug, s.type as state_type, s.code as state_code
+        FROM cities ct
+        LEFT JOIN states s ON s.id = ct.state_id
+        WHERE ct.slug = ?
+      `)
+      .get(slug) as
+      | {
+          id: string;
+          rank: number;
+          name: string;
+          slug: string;
+          state_id: string | null;
+          state_name: string;
+          state_slug: string | null;
+          state_type: string | null;
+          state_code: string | null;
+          is_capital: number;
+          census_2011: number;
+          census_2001: number | null;
+          change_pct: string;
+          lat: number;
+          lon: number;
+        }
+      | undefined;
+
+    if (!city) {
+      res.status(404).json({ error: 'City not found.' });
+      return;
+    }
+
+    const todayIst = getTodayIndiaDate();
+    const yesterdayIst = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(Date.now() - 86_400_000));
+
+    const dateRaw = String(req.query.date || '').trim();
+    const activeDate = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : todayIst;
+    const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : null;
+    const forceRefresh = req.query.refresh === '1';
+
+    const existingCityCount = (
+      db
+        .prepare(
+          "SELECT COUNT(*) as c FROM articles WHERE status = 'published' AND city_id = ? AND date(datetime(published_at, '+5 hours', '+30 minutes')) = date(?)",
+        )
+        .get(city.id, activeDate) as { c: number }
+    ).c;
+
+    let wireStatus: { fetched: number; inserted: number; cached?: boolean; error?: string } | null = null;
+    if (forceRefresh || existingCityCount < 2) {
+      wireStatus = await fetchLiveCityWire(city, forceRefresh);
+    }
+
+    const langClause = lang ? ' AND a.language = ?' : '';
+    const langParams = lang ? [lang] : [];
+
+    const cityArticles = db
+      .prepare(`
+        ${ARTICLE_SELECT}
+        WHERE a.status = 'published'
+          AND a.city_id = ?
+          AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+          ${langClause}
+        ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC
+        LIMIT 20
+      `)
+      .all(city.id, activeDate, ...langParams) as Array<{ id: string }>;
+
+    const excludeIds = new Set(cityArticles.map((a) => a.id));
+
+    const recentCityRaw = db
+      .prepare(`
+        ${ARTICLE_SELECT}
+        WHERE a.status = 'published'
+          AND a.city_id = ?
+          ${langClause}
+        ORDER BY a.published_at DESC
+        LIMIT 16
+      `)
+      .all(city.id, ...langParams) as Array<{ id: string }>;
+
+    const recentCityArticles = recentCityRaw.filter((a) => !excludeIds.has(a.id));
+    for (const a of recentCityArticles) excludeIds.add(a.id);
+
+    let stateArticles: Array<Record<string, unknown>> = [];
+    if (city.state_id) {
+      const dateStateRows = db
+        .prepare(`
+          ${ARTICLE_SELECT}
+          WHERE a.status = 'published'
+            AND a.state_id = ?
+            AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+            ${langClause}
+          ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC
+          LIMIT 16
+        `)
+        .all(city.state_id, activeDate, ...langParams) as Array<Record<string, unknown>>;
+
+      const recentStateRows = db
+        .prepare(`
+          ${ARTICLE_SELECT}
+          WHERE a.status = 'published'
+            AND a.state_id = ?
+            ${langClause}
+          ORDER BY a.published_at DESC
+          LIMIT 16
+        `)
+        .all(city.state_id, ...langParams) as Array<Record<string, unknown>>;
+
+      const seenStateIds = new Set(excludeIds);
+      for (const row of [...dateStateRows, ...recentStateRows]) {
+        const rid = String(row.id || '');
+        if (!seenStateIds.has(rid)) {
+          seenStateIds.add(rid);
+          stateArticles.push(row);
+        }
+        if (stateArticles.length >= 12) break;
+      }
+    }
+
+    const availableDates = db
+      .prepare(`
+        SELECT date(datetime(a.published_at, '+5 hours', '+30 minutes')) as date,
+               COUNT(*) as count
+        FROM articles a
+        WHERE a.status = 'published'
+          AND a.published_at IS NOT NULL
+          AND (a.city_id = ? OR a.state_id = ?)
+        GROUP BY date
+        HAVING date IS NOT NULL
+        ORDER BY date DESC
+        LIMIT 30
+      `)
+      .all(city.id, city.state_id || '') as Array<{ date: string; count: number }>;
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      city,
+      date: activeDate,
+      todayIst,
+      yesterdayIst,
+      wireStatus,
+      cityArticles,
+      recentCityArticles,
+      stateArticles,
+      availableDates,
+    });
   });
 
   app.get('/api/editions', (req, res) => {

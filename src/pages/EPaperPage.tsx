@@ -2,15 +2,20 @@ import {
   Bookmark,
   BookOpen,
   Calendar,
+  Check,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Download,
   ExternalLink,
   FileText,
+  MapPin,
   Maximize2,
   Minimize2,
   Printer,
   Search,
+  Square,
+  Volume2,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
@@ -18,6 +23,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
 import { ArticleImage } from '../components/ArticleImage.tsx';
+import { OurPrideCityEPaper } from '../components/OurPrideCityEPaper.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
@@ -25,9 +31,11 @@ import { fetchActiveAdsMerged } from '../services/adsFirestore.ts';
 import type { Advertisement, Edition, EditionPage } from '../types/news.ts';
 import { formatIndiaDateTime } from '../utils/date.ts';
 import { downloadEditionPdf } from '../utils/pdf.ts';
+import { speakNewspaperText, stopNewspaperSpeech } from '../utils/speech.ts';
 
 type PaperTheme = 'light' | 'sepia' | 'dark';
 type ReaderViewMode = 'broadsheet' | 'article';
+type TextScale = 'compact' | 'standard' | 'large';
 
 interface ArchiveHit {
   edition_date: string;
@@ -161,7 +169,10 @@ function BroadsheetSponsorBox({
 
 export function EPaperPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { language, readerToken, readerUser, setReaderDrawerOpen } = usePortal();
+  const { language, readerToken, readerUser, setReaderDrawerOpen, selectedLocalCity } = usePortal();
+
+  const initialSection = searchParams.get('section') === 'our-pride' ? 'our-pride' : 'broadsheet';
+  const [paperSection, setPaperSection] = useState<'broadsheet' | 'our-pride'>(initialSection);
 
   const [editions, setEditions] = useState<Edition[]>([]);
   const [selectedEdition, setSelectedEdition] = useState<Edition | null>(null);
@@ -174,14 +185,26 @@ export function EPaperPage() {
   const [zoom, setZoom] = useState<number>(100);
   const [paperTheme, setPaperTheme] = useState<PaperTheme>('light');
   const [viewMode, setViewMode] = useState<ReaderViewMode>('broadsheet');
+  const [textScale, setTextScale] = useState<TextScale>('standard');
   const [fullscreen, setFullscreen] = useState(false);
   const [pageSaved, setPageSaved] = useState(false);
+  const [speakingTarget, setSpeakingTarget] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Archive Search
   const [archiveQuery, setArchiveQuery] = useState('');
   const [archiveHits, setArchiveHits] = useState<ArchiveHit[]>([]);
   const [searchingArchive, setSearchingArchive] = useState(false);
   const [showArchiveResults, setShowArchiveResults] = useState(false);
+
+  useEffect(() => {
+    const sec = searchParams.get('section');
+    if (sec === 'our-pride') {
+      setPaperSection('our-pride');
+    } else if (sec === 'broadsheet') {
+      setPaperSection('broadsheet');
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     let active = true;
@@ -315,12 +338,85 @@ export function EPaperPage() {
     if (res.ok) setPageSaved(true);
   };
 
+  useEffect(() => {
+    stopNewspaperSpeech();
+    setSpeakingTarget(null);
+  }, [currentPageIdx, selectedEdition?.edition_date, paperSection]);
+
+  useEffect(() => {
+    return () => {
+      stopNewspaperSpeech();
+    };
+  }, []);
+
+  const togglePageSpeech = () => {
+    if (!activePage || activePage.articles.length === 0) return;
+    if (speakingTarget === 'page') {
+      stopNewspaperSpeech();
+      setSpeakingTarget(null);
+      return;
+    }
+    const pageTranscript = activePage.articles
+      .slice(0, 6)
+      .map((art, i) => `Story ${i + 1}. ${art.title}. ${art.summary || ''}`)
+      .join(' ');
+    speakNewspaperText(`${activePage.sectionTitle}. ${pageTranscript}`, {
+      onStart: () => setSpeakingTarget('page'),
+      onEnd: () => setSpeakingTarget((curr) => (curr === 'page' ? null : curr)),
+    });
+  };
+
+  const toggleStorySpeech = (key: string, title: string, summary: string) => {
+    if (speakingTarget === key) {
+      stopNewspaperSpeech();
+      setSpeakingTarget(null);
+      return;
+    }
+    speakNewspaperText(`${title}. ${summary || ''}`, {
+      onStart: () => setSpeakingTarget(key),
+      onEnd: () => setSpeakingTarget((curr) => (curr === key ? null : curr)),
+    });
+  };
+
+  const copyStoryClip = async (
+    key: string,
+    art: { title: string; summary: string; source_name?: string; slug?: string },
+  ) => {
+    const shareUrl = art.slug
+      ? `${window.location.origin}/news/${art.slug}`
+      : `${window.location.origin}/epaper?date=${encodeURIComponent(selectedEdition?.edition_date || '')}&page=${activePage?.pageNumber || 1}`;
+    const clipText = `${art.title}\n\n${art.summary}\n\n— ${art.source_name || 'Maheep News Portal'} (${selectedEdition?.edition_date || ''})\n${shareUrl}`;
+    try {
+      await navigator.clipboard.writeText(clipText);
+      setCopiedKey(key);
+      window.setTimeout(() => {
+        setCopiedKey((curr) => (curr === key ? null : curr));
+      }, 2000);
+    } catch {
+      // Clipboard unavailable in restricted browser context
+    }
+  };
+
   const sheetClass =
     paperTheme === 'sepia'
-      ? 'bg-[#FBF6EB] text-[#292118] border-[#DFD2BA]'
+      ? 'bg-[#F7F0DF] text-[#292118] border-[#D9CAAE]'
       : paperTheme === 'dark'
       ? 'bg-neutral-950 text-neutral-100 border-neutral-800'
-      : 'bg-white text-neutral-950 border-neutral-300';
+      : 'bg-[#FCFBF8] text-neutral-950 border-neutral-300';
+
+  const bodyScaleClass =
+    textScale === 'compact'
+      ? 'text-[13px] leading-relaxed'
+      : textScale === 'large'
+      ? 'text-base sm:text-[17px] leading-[1.7]'
+      : 'text-sm sm:text-[15px] leading-relaxed';
+
+  const articleScaleClass =
+    textScale === 'compact'
+      ? 'text-sm sm:text-[15px] leading-relaxed'
+      : textScale === 'large'
+      ? 'text-[17px] sm:text-lg leading-[1.75]'
+      : 'text-base leading-relaxed';
 
   const clickableIndex = pages.flatMap((p, pIdx) =>
     p.articles.slice(0, 3).map((a) => ({
@@ -355,62 +451,137 @@ export function EPaperPage() {
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <label className="flex items-center gap-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300">
-                <Calendar className="w-4 h-4 text-[#00652E]" />
-                <input
-                  type="month"
-                  value={monthFilter}
-                  onChange={(e) => setMonthFilter(e.target.value)}
-                  className="px-2.5 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs"
-                />
-              </label>
+            {paperSection === 'broadsheet' && (
+              <div className="flex flex-wrap items-center gap-2.5">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                  <Calendar className="w-4 h-4 text-[#00652E]" />
+                  <input
+                    type="month"
+                    value={monthFilter}
+                    onChange={(e) => setMonthFilter(e.target.value)}
+                    className="px-2.5 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs"
+                  />
+                </label>
 
-              {editions.length > 0 && (
-                <select
-                  value={selectedEdition?.edition_date || ''}
-                  onChange={(e) => handleDateChange(e.target.value)}
-                  aria-label="Select edition date"
-                  className="px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-mono-tabular"
-                >
-                  {editions.map((ed) => (
-                    <option key={ed.id} value={ed.edition_date}>
-                      {ed.edition_date} — {ed.page_count} Pages · {ed.article_count} Reports
-                    </option>
-                  ))}
-                </select>
-              )}
+                {editions.length > 0 && (
+                  <select
+                    value={selectedEdition?.edition_date || ''}
+                    onChange={(e) => handleDateChange(e.target.value)}
+                    aria-label="Select edition date"
+                    className="px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-mono-tabular"
+                  >
+                    {editions.map((ed) => (
+                      <option key={ed.id} value={ed.edition_date}>
+                        {ed.edition_date} — {ed.page_count} Pages · {ed.article_count} Reports
+                      </option>
+                    ))}
+                  </select>
+                )}
 
-              {selectedEdition && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => downloadEditionPdf(selectedEdition, activeAds)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold transition-colors whitespace-nowrap"
-                  >
-                    <Download className="w-3.5 h-3.5" /> PDF
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => window.print()}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E] whitespace-nowrap"
-                  >
-                    <Printer className="w-3.5 h-3.5" /> Print
-                  </button>
-                  <a
-                    href={`/api/editions/${selectedEdition.id}/html`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E] whitespace-nowrap"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" /> Full HTML
-                  </a>
-                </>
-              )}
-            </div>
+                {selectedEdition && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => downloadEditionPdf(selectedEdition, activeAds)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold transition-colors whitespace-nowrap"
+                    >
+                      <Download className="w-3.5 h-3.5" /> PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => window.print()}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E] whitespace-nowrap"
+                    >
+                      <Printer className="w-3.5 h-3.5" /> Print
+                    </button>
+                    <a
+                      href={`/api/editions/${selectedEdition.id}/html`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E] whitespace-nowrap"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" /> Full HTML
+                    </a>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 
+        {/* E-Newspaper Edition Mode Switcher: Full Broadsheet vs Our Pride Every-City */}
+        {!fullscreen && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 dark:border-neutral-800 pb-4 no-print">
+            <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="E-Newspaper Edition Section">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={paperSection === 'broadsheet'}
+                onClick={() => {
+                  setPaperSection('broadsheet');
+                  setSearchParams(
+                    selectedEdition ? { date: selectedEdition.edition_date, page: String(currentPageIdx + 1) } : {},
+                    { replace: true },
+                  );
+                }}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+                  paperSection === 'broadsheet'
+                    ? 'bg-[#00652E] text-white'
+                    : 'bg-neutral-100 dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 hover:border-[#00652E] border border-neutral-200 dark:border-neutral-800'
+                }`}
+              >
+                <BookOpen className="w-4 h-4" />
+                Full Broadsheet Edition
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={paperSection === 'our-pride'}
+                onClick={() => {
+                  setPaperSection('our-pride');
+                  const city = searchParams.get('city') || selectedLocalCity || 'mumbai';
+                  const dt = searchParams.get('date') || selectedEdition?.edition_date || '';
+                  const nextParams: Record<string, string> = { section: 'our-pride', city };
+                  if (dt) nextParams.date = dt;
+                  setSearchParams(nextParams, { replace: true });
+                }}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+                  paperSection === 'our-pride'
+                    ? 'bg-[#00652E] text-white'
+                    : 'bg-[#EAF5E5]/70 dark:bg-[#00451F]/30 text-[#00652E] dark:text-[#4ade80] border border-[#00652E]/30 hover:bg-[#00652E] hover:text-white'
+                }`}
+              >
+                <MapPin className="w-4 h-4" />
+                Our Pride · Every City Local News
+              </button>
+            </div>
+            <span className="text-xs text-neutral-500 dark:text-neutral-400">
+              {paperSection === 'our-pride'
+                ? 'Daily local news for every Indian Census city & state'
+                : 'Complete multi-page national, international, Our Pride, business & sports broadsheet'}
+            </span>
+          </div>
+        )}
+
+        {paperSection === 'our-pride' ? (
+          <OurPrideCityEPaper
+            paperTheme={paperTheme}
+            setPaperTheme={setPaperTheme}
+            viewMode={viewMode}
+            setViewMode={setViewMode}
+            zoom={zoom}
+            setZoom={setZoom}
+            fullscreen={fullscreen}
+            setFullscreen={setFullscreen}
+            initialCitySlug={searchParams.get('city') || selectedLocalCity || 'mumbai'}
+            initialDate={searchParams.get('date') || selectedEdition?.edition_date || ''}
+            onSyncParams={(citySlug, dt) => {
+              setSearchParams({ section: 'our-pride', city: citySlug, date: dt }, { replace: true });
+            }}
+            broadsheetAd={broadsheetAd}
+          />
+        ) : (
+          <>
         {/* Resume Last Read Page Banner */}
         {!fullscreen &&
           readerUser?.last_epaper_edition &&
@@ -541,6 +712,20 @@ export function EPaperPage() {
                       </button>
                     ))}
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaperSection('our-pride');
+                      setSearchParams(
+                        { section: 'our-pride', city: selectedLocalCity || 'mumbai', date: selectedEdition.edition_date },
+                        { replace: true },
+                      );
+                    }}
+                    className="mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#EAF5E5] dark:bg-[#00451F]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-[#00652E] hover:text-white transition-colors"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    Browse Every City (Our Pride) →
+                  </button>
                 </div>
 
                 {/* Clickable Newspaper Index */}
@@ -643,6 +828,32 @@ export function EPaperPage() {
                     </button>
                   </div>
 
+                  {/* Type Comfort Scale (A- / A / A+) */}
+                  <div
+                    className="inline-flex rounded border border-neutral-300 dark:border-neutral-700 overflow-hidden bg-white dark:bg-neutral-950"
+                    role="group"
+                    aria-label="Reading font size"
+                  >
+                    {(
+                      [
+                        { id: 'compact', label: 'A-' },
+                        { id: 'standard', label: 'A' },
+                        { id: 'large', label: 'A+' },
+                      ] as const
+                    ).map((sz) => (
+                      <button
+                        key={sz.id}
+                        type="button"
+                        onClick={() => setTextScale(sz.id)}
+                        className={`px-2 py-1 font-semibold whitespace-nowrap ${
+                          textScale === sz.id ? 'bg-[#00652E] text-white' : ''
+                        }`}
+                      >
+                        {sz.label}
+                      </button>
+                    ))}
+                  </div>
+
                   {/* Personal Paper Theme */}
                   <div className="inline-flex rounded border border-neutral-300 dark:border-neutral-700 overflow-hidden bg-white dark:bg-neutral-950">
                     {(['light', 'sepia', 'dark'] as const).map((t) => (
@@ -650,7 +861,7 @@ export function EPaperPage() {
                         key={t}
                         type="button"
                         onClick={() => setPaperTheme(t)}
-                        className={`px-2 py-1 font-semibold capitalize ${
+                        className={`px-2 py-1 font-semibold capitalize whitespace-nowrap ${
                           paperTheme === t ? 'bg-[#00652E] text-white' : ''
                         }`}
                       >
@@ -658,6 +869,27 @@ export function EPaperPage() {
                       </button>
                     ))}
                   </div>
+
+                  {/* Audio Narration */}
+                  <button
+                    type="button"
+                    onClick={togglePageSpeech}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded border font-semibold whitespace-nowrap ${
+                      speakingTarget === 'page'
+                        ? 'bg-[#00652E] text-white border-[#00652E]'
+                        : 'border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 hover:border-[#00652E]'
+                    }`}
+                  >
+                    {speakingTarget === 'page' ? (
+                      <>
+                        <Square className="w-3 h-3" /> Stop Audio
+                      </>
+                    ) : (
+                      <>
+                        <Volume2 className="w-3.5 h-3.5 text-[#00652E] dark:text-[#4ade80]" /> Listen Page
+                      </>
+                    )}
+                  </button>
 
                   {/* Zoom Controls */}
                   {viewMode === 'broadsheet' && (
@@ -685,7 +917,7 @@ export function EPaperPage() {
                   <button
                     type="button"
                     onClick={bookmarkCurrentPage}
-                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded border font-semibold ${
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded border font-semibold whitespace-nowrap ${
                       pageSaved
                         ? 'bg-[#00652E] text-white border-[#00652E]'
                         : 'border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950'
@@ -698,13 +930,21 @@ export function EPaperPage() {
                   <button
                     type="button"
                     onClick={() => setFullscreen((f) => !f)}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 font-semibold"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 font-semibold whitespace-nowrap"
                     title="Distraction-free fullscreen reading"
                   >
                     {fullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
                     {fullscreen ? 'Exit Focus' : 'Focus'}
                   </button>
                 </div>
+              </div>
+
+              {/* Thin Edition Progress Strip */}
+              <div className="h-[2px] w-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden rounded-full no-print">
+                <div
+                  className="h-full bg-[#00652E] dark:bg-[#4ade80] transition-all duration-300"
+                  style={{ width: `${((currentPageIdx + 1) / Math.max(1, pages.length)) * 100}%` }}
+                />
               </div>
 
               {/* Clean Article Reader Mode vs Broadsheet Sheet */}
@@ -727,6 +967,7 @@ export function EPaperPage() {
                       const timeLabel = formatIndiaDateTime(art.published_at);
                       const metaParts = [
                         art.category_name || 'News',
+                        art.city_name ? art.city_name.replace(' (town)', '') : '',
                         art.state_name || '',
                         art.subtopic || '',
                         art.source_name || 'Maheep Desk',
@@ -764,24 +1005,56 @@ export function EPaperPage() {
                           {standfirst && (
                             <p className="text-base font-semibold leading-relaxed opacity-95">{standfirst}</p>
                           )}
-                          <div className="space-y-3 text-base leading-relaxed opacity-90">
+                          <div className={`space-y-3 opacity-90 ${articleScaleClass}`}>
                             {paragraphs.map((para, pIdx) => (
                               <p key={pIdx}>{para}</p>
                             ))}
                           </div>
                           <div className="flex flex-wrap items-center justify-between gap-3 text-xs pt-2">
-                            {art.source_url && (
-                              <a
-                                href={art.source_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 font-semibold opacity-75 hover:opacity-100 hover:underline"
+                            <div className="flex flex-wrap items-center gap-3">
+                              {art.source_url && (
+                                <a
+                                  href={art.source_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 font-semibold opacity-75 hover:opacity-100 hover:underline"
+                                >
+                                  Original Source ({art.source_name}) <ExternalLink className="w-3 h-3" />
+                                </a>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => toggleStorySpeech(`art-${idx}`, art.title, art.summary)}
+                                className="inline-flex items-center gap-1 font-semibold opacity-80 hover:opacity-100 text-[#00652E] dark:text-[#4ade80] whitespace-nowrap"
                               >
-                                Original Source ({art.source_name}) <ExternalLink className="w-3 h-3" />
-                              </a>
-                            )}
+                                {speakingTarget === `art-${idx}` ? (
+                                  <>
+                                    <Square className="w-3 h-3" /> Stop
+                                  </>
+                                ) : (
+                                  <>
+                                    <Volume2 className="w-3.5 h-3.5" /> Listen
+                                  </>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => copyStoryClip(`art-${idx}`, art)}
+                                className="inline-flex items-center gap-1 font-semibold opacity-80 hover:opacity-100 hover:text-[#00652E] whitespace-nowrap"
+                              >
+                                {copiedKey === `art-${idx}` ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5 text-[#00652E]" /> Copied
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3.5 h-3.5" /> Copy Clip
+                                  </>
+                                )}
+                              </button>
+                            </div>
                             {art.slug && (
-                              <Link to={`/news/${art.slug}`} className="font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline ml-auto">
+                              <Link to={`/news/${art.slug}`} className="font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline ml-auto whitespace-nowrap">
                                 Open Full Interactive Report →
                               </Link>
                             )}
@@ -801,20 +1074,22 @@ export function EPaperPage() {
                     }}
                     className={`epaper-print-page border rounded-lg p-6 sm:p-10 shadow-sm transition-transform ${sheetClass}`}
                   >
-                    <div className="border-b-2 border-[#00652E] pb-4 mb-5 flex flex-col sm:flex-row sm:items-end justify-between gap-2">
-                      <div>
-                        <div className="font-editorial text-2xl sm:text-3xl font-extrabold text-[#00652E] dark:text-[#4ade80]">
-                          MAHEEP NEWS PORTAL
-                        </div>
-                        <p className="text-xs opacity-75">
-                          सच के साथ, जनता के विश्वास के साथ · News from India &amp; Beyond · Detailed Broadsheet Edition
-                        </p>
-                      </div>
-                      <div className="text-left sm:text-right text-xs font-mono-tabular opacity-85">
-                        <div className="font-semibold">{activePage.sectionTitle}</div>
+                    <div className="border-b-2 border-[#00652E] pb-1 mb-5">
+                      <div className="border-b border-current/20 pb-3.5 flex flex-col sm:flex-row sm:items-end justify-between gap-2">
                         <div>
-                          Edition: {selectedEdition.edition_date} · Page {activePage.pageNumber} of {pages.length} ·{' '}
-                          {activePage.articles.length} Stories
+                          <div className="font-editorial text-2xl sm:text-3xl font-extrabold text-[#00652E] dark:text-[#4ade80] tracking-tight">
+                            MAHEEP NEWS PORTAL
+                          </div>
+                          <p className="text-xs opacity-75">
+                            सच के साथ, जनता के विश्वास के साथ · News from India &amp; Beyond · Detailed Broadsheet Edition
+                          </p>
+                        </div>
+                        <div className="text-left sm:text-right text-xs font-mono-tabular opacity-85">
+                          <div className="font-semibold">{activePage.sectionTitle}</div>
+                          <div>
+                            Edition: {selectedEdition.edition_date} · Page {activePage.pageNumber} of {pages.length} ·{' '}
+                            {activePage.articles.length} Stories
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -837,6 +1112,7 @@ export function EPaperPage() {
                         const isLead = idx === 0;
                         const metaParts = [
                           art.category_name || 'News',
+                          art.city_name ? art.city_name.replace(' (town)', '') : '',
                           art.state_name || '',
                           art.subtopic || '',
                           art.source_name || 'Maheep Desk',
@@ -905,7 +1181,7 @@ export function EPaperPage() {
                                   <p className="text-sm font-semibold opacity-95 leading-relaxed">{standfirst}</p>
                                 )}
 
-                                <div className="space-y-2.5 text-sm opacity-90 leading-relaxed text-justify">
+                                <div className={`space-y-2.5 opacity-90 text-justify ${bodyScaleClass}`}>
                                   {paragraphs.map((para, pIdx) => (
                                     <p
                                       key={pIdx}
@@ -920,23 +1196,55 @@ export function EPaperPage() {
                                   ))}
                                 </div>
 
-                                <div className="pt-1 flex flex-wrap items-center justify-between gap-2 text-xs">
-                                  {art.source_url ? (
-                                    <a
-                                      href={art.source_url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 opacity-75 hover:opacity-100 hover:underline font-medium"
+                                <div className="pt-1 flex flex-wrap items-center justify-between gap-2 text-xs no-print">
+                                  <div className="flex flex-wrap items-center gap-3">
+                                    {art.source_url ? (
+                                      <a
+                                        href={art.source_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1 opacity-75 hover:opacity-100 hover:underline font-medium"
+                                      >
+                                        Source: {art.source_name} <ExternalLink className="w-3 h-3" />
+                                      </a>
+                                    ) : (
+                                      <span className="opacity-65">Maheep Bureau Dispatch</span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleStorySpeech(`sheet-${idx}`, art.title, art.summary)}
+                                      className="inline-flex items-center gap-1 font-semibold opacity-80 hover:opacity-100 text-[#00652E] dark:text-[#4ade80] whitespace-nowrap"
                                     >
-                                      Source: {art.source_name} <ExternalLink className="w-3 h-3" />
-                                    </a>
-                                  ) : (
-                                    <span className="opacity-65">Maheep Bureau Dispatch</span>
-                                  )}
+                                      {speakingTarget === `sheet-${idx}` ? (
+                                        <>
+                                          <Square className="w-3 h-3" /> Stop
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Volume2 className="w-3.5 h-3.5" /> Listen
+                                        </>
+                                      )}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyStoryClip(`sheet-${idx}`, art)}
+                                      className="inline-flex items-center gap-1 font-semibold opacity-80 hover:opacity-100 hover:text-[#00652E] whitespace-nowrap"
+                                    >
+                                      {copiedKey === `sheet-${idx}` ? (
+                                        <>
+                                          <Check className="w-3.5 h-3.5 text-[#00652E]" /> Copied
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Copy className="w-3.5 h-3.5" /> Copy Clip
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
                                   {art.slug && (
                                     <Link
                                       to={`/news/${art.slug}`}
-                                      className="font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline"
+                                      className="font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline whitespace-nowrap"
                                     >
                                       Read Full Story →
                                     </Link>
@@ -985,6 +1293,8 @@ export function EPaperPage() {
               </div>
             </div>
           </div>
+        )}
+          </>
         )}
       </div>
     </PublicLayout>
