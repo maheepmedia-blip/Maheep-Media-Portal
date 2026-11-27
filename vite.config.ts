@@ -82,6 +82,9 @@ export default defineConfig(({ mode }) => {
         },
         workbox: {
           importScripts: ['/push-sw.js'],
+          skipWaiting: true,
+          clientsClaim: true,
+          cleanupOutdatedCaches: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           navigateFallbackDenylist: [/^\/api\//, /^\/sitemap/, /^\/robots\.txt$/, /^\/\.well-known\//],
           runtimeCaching: [
@@ -116,7 +119,7 @@ export default defineConfig(({ mode }) => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module',
         },
       }),

@@ -133,6 +133,10 @@ export function HomePage() {
     if (selectedEdition === 'local') {
       qp.set('section', 'our-pride');
       if (selectedLocalCity) qp.set('city', selectedLocalCity);
+    } else if (selectedEdition === 'national') {
+      qp.set('section', 'beacon');
+    } else if (selectedEdition === 'international') {
+      qp.set('section', 'worldwire');
     }
     if (selectedDate) qp.set('date', selectedDate);
     const qs = qp.toString();

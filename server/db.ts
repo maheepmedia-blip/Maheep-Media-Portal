@@ -197,6 +197,46 @@ export function initDatabase(): void {
 
     CREATE INDEX IF NOT EXISTS idx_ads_placement_active ON ads(placement, active);
 
+    CREATE TABLE IF NOT EXISTS wire_dispatches (
+      id TEXT PRIMARY KEY,
+      scope_type TEXT NOT NULL CHECK (scope_type IN ('city', 'state', 'country')),
+      scope_slug TEXT NOT NULL,
+      scope_label TEXT NOT NULL DEFAULT '',
+      beat TEXT NOT NULL DEFAULT 'top',
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      detailed_body TEXT NOT NULL DEFAULT '',
+      image_url TEXT NOT NULL DEFAULT '',
+      image_rights TEXT NOT NULL DEFAULT '',
+      source_name TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      author TEXT NOT NULL DEFAULT '',
+      language TEXT NOT NULL DEFAULT 'en',
+      published_at TEXT NOT NULL,
+      fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(scope_type, scope_slug, source_url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wire_scope_pub ON wire_dispatches(scope_type, scope_slug, published_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_wire_scope_lang_pub ON wire_dispatches(scope_type, scope_slug, language, published_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_wire_scope_beat ON wire_dispatches(scope_type, scope_slug, beat);
+
+    CREATE TABLE IF NOT EXISTS wire_sync_log (
+      scope_key TEXT PRIMARY KEY,
+      last_synced_at TEXT NOT NULL,
+      total_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS article_translations (
+      cache_key TEXT PRIMARY KEY,
+      target_lang TEXT NOT NULL CHECK (target_lang IN ('en', 'hi')),
+      title TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      provider TEXT NOT NULL DEFAULT 'mymemory',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_translations_lang ON article_translations(target_lang, cache_key);
+
     CREATE TABLE IF NOT EXISTS uploaded_media (
       filename TEXT PRIMARY KEY,
       mime_type TEXT NOT NULL,
@@ -1699,55 +1739,235 @@ function seedInitialData(): void {
     }
     setSetting('rss_photo_sources_v1', 'done');
   }
+
+  // Upgrade broadsheet editions once to include dedicated Beacon, WorldWire, and Our Pride multi-desk sections
+  if (!getSetting('edition_detailed_v4')) {
+    const edRows = db
+      .prepare('SELECT id, edition_date FROM editions')
+      .all() as Array<{ id: string; edition_date: string }>;
+    const fetchDayArticles = db.prepare(`
+      SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
+             a.state_id, a.city_id, c.name as category_name, c.slug as category_slug, s.name as state_name, ct.name as city_name, ct.slug as city_slug
+      FROM articles a
+      LEFT JOIN categories c ON c.id = a.category_id
+      LEFT JOIN states s ON s.id = a.state_id
+      LEFT JOIN cities ct ON ct.id = a.city_id
+      WHERE a.status = 'published'
+        AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
+      ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC, a.featured DESC, a.breaking DESC
+      LIMIT 120
+    `);
+    const updateEd = db.prepare(
+      'UPDATE editions SET cover_image = ?, page_count = ?, article_count = ?, content_json = ? WHERE id = ?',
+    );
+    const tx = db.transaction(() => {
+      for (const ed of edRows) {
+        const dayArticles = fetchDayArticles.all(ed.edition_date) as Array<Record<string, unknown>>;
+        if (dayArticles.length > 0) {
+          const pages = buildEditionPagesPayload(ed.edition_date, dayArticles);
+          const cover = String(
+            dayArticles.find((a) => Boolean(a.image_url))?.image_url ||
+              '/src/assets/images/hero_parliament_india_1795494842593.jpg',
+          );
+          updateEd.run(cover, pages.length, dayArticles.length, JSON.stringify({ pages }), ed.id);
+        }
+      }
+      setSetting('edition_detailed_v4', 'done');
+    });
+    tx();
+  }
 }
 
-export function buildEditionPagesPayload(dateStr: string, articles: Array<Record<string, unknown>>) {
-  const coverStories = articles.slice(0, 5);
-  const usedIds = new Set(coverStories.map((a) => String(a.id || a.title || '')));
-  const remaining = articles.filter((a) => !usedIds.has(String(a.id || a.title || '')));
+interface BroadsheetSlotDef {
+  desk: 'lead' | 'national' | 'local' | 'international' | 'business' | 'sports' | 'techsci' | 'education' | 'law' | 'other';
+  enTitle: string;
+  enSub: string;
+  hiTitle: string;
+  hiSub: string;
+}
 
-  const takeByCat = (slugs: string[], limit = 8) => {
-    const picked = remaining
-      .filter((a) => !usedIds.has(String(a.id || a.title || '')) && slugs.includes(String(a.category_slug || '')))
-      .slice(0, limit);
-    for (const item of picked) usedIds.add(String(item.id || item.title || ''));
-    return picked;
+const BROADSHEET_25_SLOTS: BroadsheetSlotDef[] = [
+  { desk: 'lead', enTitle: 'Front Page · मुख्य पृष्ठ', enSub: 'Lead Stories & Daily Headlines', hiTitle: 'मुख्य पृष्ठ · हिंदी संस्करण', hiSub: 'आज की प्रमुख और बड़ी खबरें' },
+  { desk: 'national', enTitle: 'The Beacon · National Desk (Part I)', enSub: 'Union Government, Parliament & Policy', hiTitle: 'द बीकन · राष्ट्रीय डेस्क (भाग 1)', hiSub: 'केंद्र सरकार, संसद और राष्ट्रीय नीतियां' },
+  { desk: 'national', enTitle: 'The Beacon · National Desk (Part II)', enSub: 'National Infrastructure, Railways & Public Services', hiTitle: 'द बीकन · राष्ट्रीय डेस्क (भाग 2)', hiSub: 'राष्ट्रीय अवसंरचना, रेलवे और जन सेवाएं' },
+  { desk: 'national', enTitle: 'The Beacon · National Desk (Part III)', enSub: 'Defence, Internal Affairs & Union Ministries', hiTitle: 'द बीकन · राष्ट्रीय डेस्क (भाग 3)', hiSub: 'रक्षा, गृह मामले और केंद्रीय मंत्रालय' },
+  { desk: 'national', enTitle: 'The Beacon · National Desk (Part IV)', enSub: 'Parliament Debates & National Dispatches', hiTitle: 'द बीकन · राष्ट्रीय डेस्क (भाग 4)', hiSub: 'संसदीय चर्चा और राष्ट्रीय समाचार' },
+  { desk: 'local', enTitle: 'Our Pride · States & Cities (Part I)', enSub: 'Metro Civic Reports & State Capitals', hiTitle: 'अवर प्राइड · शहर एवं राज्य डेस्क (भाग 1)', hiSub: 'महानगर नागरिक समाचार और राज्य राजधानियां' },
+  { desk: 'local', enTitle: 'Our Pride · States & Cities (Part II)', enSub: 'Municipal Administration & Urban Mobility', hiTitle: 'अवर प्राइड · शहर एवं राज्य डेस्क (भाग 2)', hiSub: 'नगर प्रशासन और शहरी परिवहन' },
+  { desk: 'local', enTitle: 'Our Pride · States & Cities (Part III)', enSub: 'North & Central India Regional Coverage', hiTitle: 'अवर प्राइड · शहर एवं राज्य डेस्क (भाग 3)', hiSub: 'उत्तर एवं मध्य भारत के क्षेत्रीय समाचार' },
+  { desk: 'local', enTitle: 'Our Pride · States & Cities (Part IV)', enSub: 'West, East & Northeast States Bureau', hiTitle: 'अवर प्राइड · शहर एवं राज्य डेस्क (भाग 4)', hiSub: 'पश्चिम, पूर्व और पूर्वोत्तर राज्यों की खबरें' },
+  { desk: 'local', enTitle: 'Our Pride · States & Cities (Part V)', enSub: 'South India Districts & Grassroots Reports', hiTitle: 'अवर प्राइड · शहर एवं राज्य डेस्क (भाग 5)', hiSub: 'दक्षिण भारत और स्थानीय जमीनी रिपोर्ट' },
+  { desk: 'international', enTitle: 'WorldWire · Global Affairs (Part I)', enSub: 'Diplomacy, Foreign Policy & Bilateral Summits', hiTitle: 'वर्ल्डवायर · अंतरराष्ट्रीय डेस्क (भाग 1)', hiSub: 'कूटनीति, विदेश नीति और वैश्विक शिखर सम्मेलन' },
+  { desk: 'international', enTitle: 'WorldWire · Global Affairs (Part II)', enSub: 'Americas, Europe & Transatlantic Developments', hiTitle: 'वर्ल्डवायर · अंतरराष्ट्रीय डेस्क (भाग 2)', hiSub: 'अमेरिका और यूरोप के प्रमुख घटनाक्रम' },
+  { desk: 'international', enTitle: 'WorldWire · Global Affairs (Part III)', enSub: 'Asia-Pacific, Gulf & Indo-Pacific Desk', hiTitle: 'वर्ल्डवायर · अंतरराष्ट्रीय डेस्क (भाग 3)', hiSub: 'एशिया-प्रशांत और खाड़ी देशों के समाचार' },
+  { desk: 'international', enTitle: 'WorldWire · Global Affairs (Part IV)', enSub: 'Global Trade, Multilateral Bodies & World Reports', hiTitle: 'वर्ल्डवायर · अंतरराष्ट्रीय डेस्क (भाग 4)', hiSub: 'वैश्विक व्यापार और अंतरराष्ट्रीय संस्थाएं' },
+  { desk: 'business', enTitle: 'Business & Economy (Part I)', enSub: 'RBI, Banking, Markets & Corporate Filings', hiTitle: 'व्यापार एवं अर्थव्यवस्था (भाग 1)', hiSub: 'आरबीआई, बैंकिंग, शेयर बाजार और कॉर्पोरेट जगत' },
+  { desk: 'business', enTitle: 'Business & Economy (Part II)', enSub: 'Industry, Manufacturing, Startups & MSMEs', hiTitle: 'व्यापार एवं अर्थव्यवस्था (भाग 2)', hiSub: 'उद्योग, विनिर्माण, स्टार्टअप और व्यापार' },
+  { desk: 'business', enTitle: 'Business & Economy (Part III)', enSub: 'Trade, Commodities, Tax & Personal Finance', hiTitle: 'व्यापार एवं अर्थव्यवस्था (भाग 3)', hiSub: 'वैश्विक व्यापार, कर और व्यक्तिगत वित्त' },
+  { desk: 'sports', enTitle: 'Sports Desk · Cricket & Athletics (Part I)', enSub: 'International & Domestic Cricket Coverage', hiTitle: 'खेल डेस्क · क्रिकेट और एथलेटिक्स (भाग 1)', hiSub: 'अंतरराष्ट्रीय और घरेलू क्रिकेट समाचार' },
+  { desk: 'sports', enTitle: 'Sports Desk · Cricket & Athletics (Part II)', enSub: 'Badminton, Hockey, Football & Olympic Sports', hiTitle: 'खेल डेस्क · क्रिकेट और एथलेटिक्स (भाग 2)', hiSub: 'बैडमिंटन, हॉकी, फुटबॉल और ओलंपिक खेल' },
+  { desk: 'sports', enTitle: 'Sports Desk · Tournaments & Profiles (Part III)', enSub: 'Regional Academies, Fixtures & Match Reports', hiTitle: 'खेल डेस्क · प्रतियोगिताएं एवं परिणाम (भाग 3)', hiSub: 'राष्ट्रीय टूर्नामेंट और मैच रिपोर्ट' },
+  { desk: 'techsci', enTitle: 'Technology & AI Desk', enSub: 'Digital Public Infrastructure, Telecom & Cybersecurity', hiTitle: 'तकनीक एवं एआई डेस्क', hiSub: 'डिजिटल अवसंरचना, दूरसंचार और साइबर सुरक्षा' },
+  { desk: 'techsci', enTitle: 'Science, Space & Climate', enSub: 'ISRO Missions, Clean Energy & Environment', hiTitle: 'विज्ञान, अंतरिक्ष एवं पर्यावरण', hiSub: 'इसरो मिशन, स्वच्छ ऊर्जा और जलवायु अनुसंधान' },
+  { desk: 'education', enTitle: 'Education, Campuses & Youth', enSub: 'Universities, Board Exams, NEP & Fellowships', hiTitle: 'शिक्षा, विश्वविद्यालय एवं युवा', hiSub: 'विश्वविद्यालय, परीक्षाएं, छात्रवृत्ति और करियर' },
+  { desk: 'law', enTitle: 'Law, Judiciary & Civic Governance', enSub: 'Supreme Court, High Courts & Constitutional Affairs', hiTitle: 'कानून, न्यायपालिका एवं प्रशासन', hiSub: 'सुप्रीम कोर्ट, उच्च न्यायालय और संवैधानिक मामले' },
+  { desk: 'other', enTitle: 'Culture, Editorial & Extended Roundup', enSub: 'Cinema, Heritage, Opinions & Daily Archive', hiTitle: 'संस्कृति, संपादकीय एवं विशेष समाचार', hiSub: 'सिनेमा, विरासत, विचार और दैनिक संकलन' },
+];
+
+export function localizeEditionPageHeaders<
+  P extends { pageNumber: number; sectionTitle: string; subtitle: string; articles: unknown[] },
+>(pages: P[], dateStr: string, lang: 'all' | 'en' | 'hi'): P[] {
+  return pages.map((page, idx) => {
+    const slot = BROADSHEET_25_SLOTS[idx % BROADSHEET_25_SLOTS.length];
+    const partSuffix = idx >= BROADSHEET_25_SLOTS.length ? ` (${idx + 1})` : '';
+    if (lang === 'hi') {
+      return {
+        ...page,
+        sectionTitle: `${slot.hiTitle}${partSuffix}`,
+        subtitle: `${slot.hiSub} · ${dateStr}`,
+      };
+    }
+    return {
+      ...page,
+      sectionTitle: `${slot.enTitle}${partSuffix}`,
+      subtitle: `${slot.enSub} · ${dateStr}`,
+    };
+  });
+}
+
+export function buildEditionPagesPayload(
+  dateStr: string,
+  articles: Array<Record<string, unknown>>,
+  lang: 'all' | 'en' | 'hi' = 'all',
+) {
+  if (articles.length === 0) return [];
+
+  // Target 24-25 pages with 10-15 articles per page when ~240-360 articles are provided
+  const targetPages =
+    articles.length >= 295
+      ? 25
+      : articles.length >= 240
+        ? 24
+        : Math.max(1, Math.min(25, Math.ceil(articles.length / 12)));
+
+  const basePerPage = Math.floor(articles.length / targetPages);
+  const remainder = articles.length % targetPages;
+  const pageCapacities = Array.from({ length: targetPages }, (_, i) =>
+    basePerPage + (i < remainder ? 1 : 0),
+  );
+
+  // Assign Page 1 Lead Stories first
+  const leadCount = pageCapacities[0] || 12;
+  const leadArticles = articles.slice(0, leadCount);
+  const usedKeys = new Set<string>(leadArticles.map((a, idx) => String(a.id || a.slug || `${idx}:${a.title || ''}`)));
+
+  const buckets: Record<BroadsheetSlotDef['desk'], Array<Record<string, unknown>>> = {
+    lead: leadArticles,
+    national: [],
+    local: [],
+    international: [],
+    business: [],
+    sports: [],
+    techsci: [],
+    education: [],
+    law: [],
+    other: [],
   };
 
-  const takeLocalPride = (limit = 10) => {
-    const picked = remaining
-      .filter(
-        (a) =>
-          !usedIds.has(String(a.id || a.title || '')) &&
-          (String(a.category_slug || '') === 'state' || Boolean(a.state_id) || Boolean(a.city_id)),
-      )
-      .slice(0, limit);
-    for (const item of picked) usedIds.add(String(item.id || item.title || ''));
-    return picked;
-  };
+  for (let i = leadCount; i < articles.length; i++) {
+    const a = articles[i];
+    const k = String(a.id || a.slug || `${i}:${a.title || ''}`);
+    if (usedKeys.has(k)) continue;
+    usedKeys.add(k);
 
-  const nationalStories = takeByCat(['national', 'international', 'editorial'], 8);
-  const stateStories = takeLocalPride(10);
-  const bizSports = takeByCat(['business', 'sports'], 8);
-  const techEduSci = takeByCat(['technology', 'education', 'science', 'entertainment'], 8);
-  const moreStories = remaining.filter((a) => !usedIds.has(String(a.id || a.title || ''))).slice(0, 8);
+    const cat = String(a.category_slug || '').toLowerCase();
+    const hay = `${a.title || ''} ${a.subtopic || ''}`.toLowerCase();
 
-  const candidates = [
-    { sectionTitle: 'Front Page · मुख्य पृष्ठ', subtitle: `Edition Date: ${dateStr}`, articles: coverStories },
-    { sectionTitle: 'National & International · राष्ट्रीय एवं अंतर्राष्ट्रीय', subtitle: 'Parliament, Policy, Defence & Diplomacy', articles: nationalStories },
-    { sectionTitle: 'Our Pride · Local & City Dispatches', subtitle: 'Everyday City & State Coverage Across India', articles: stateStories },
-    { sectionTitle: 'Business & Sports · व्यापार और खेल', subtitle: 'Markets, Economy, Cricket & Athletics', articles: bizSports },
-    { sectionTitle: 'Technology, Science & Education · तकनीक, विज्ञान एवं शिक्षा', subtitle: 'Innovation, Campuses & Culture', articles: techEduSci },
-    { sectionTitle: 'Additional Dispatches · अन्य प्रमुख समाचार', subtitle: `More Reports for ${dateStr}`, articles: moreStories },
+    if (cat === 'state' || Boolean(a.state_id) || Boolean(a.city_id)) {
+      buckets.local.push(a);
+    } else if (cat === 'international') {
+      buckets.international.push(a);
+    } else if (cat === 'business') {
+      buckets.business.push(a);
+    } else if (cat === 'sports') {
+      buckets.sports.push(a);
+    } else if (cat === 'technology' || cat === 'science') {
+      buckets.techsci.push(a);
+    } else if (cat === 'education') {
+      buckets.education.push(a);
+    } else if (/court|judge|bench|legal|supreme|law|justice|tribunal|न्यायालय|अदालत/.test(hay)) {
+      buckets.law.push(a);
+    } else if (cat === 'national') {
+      buckets.national.push(a);
+    } else {
+      buckets.other.push(a);
+    }
+  }
+
+  // First pass: assign from each slot's matching desk pool up to page capacity
+  const allocatedPages: Array<Array<Record<string, unknown>>> = Array.from(
+    { length: targetPages },
+    () => [],
+  );
+  allocatedPages[0] = leadArticles;
+
+  for (let pIdx = 1; pIdx < targetPages; pIdx++) {
+    const slot = BROADSHEET_25_SLOTS[pIdx % BROADSHEET_25_SLOTS.length];
+    const cap = pageCapacities[pIdx];
+    const pool = buckets[slot.desk];
+    if (pool && pool.length > 0) {
+      allocatedPages[pIdx].push(...pool.splice(0, cap));
+    }
+  }
+
+  // Second pass: gather any unallocated desk items cleanly in round-robin into overflow pool and top up all pages to exact target capacity (10-15 articles per page)
+  const overflow: Array<Record<string, unknown>> = [];
+  const deskOrder: Array<BroadsheetSlotDef['desk']> = [
+    'national',
+    'local',
+    'international',
+    'business',
+    'sports',
+    'techsci',
+    'education',
+    'law',
+    'other',
   ];
+  let hasMore = true;
+  while (hasMore) {
+    hasMore = false;
+    for (const d of deskOrder) {
+      if (buckets[d].length > 0) {
+        overflow.push(buckets[d].shift()!);
+        hasMore = true;
+      }
+    }
+  }
 
-  const nonEmpty = candidates.filter((p) => p.articles.length > 0);
-  return nonEmpty.map((p, idx) => ({
-    pageNumber: idx + 1,
-    sectionTitle: p.sectionTitle,
-    subtitle: p.subtitle,
-    articles: p.articles,
-  }));
+  for (let pIdx = 1; pIdx < targetPages; pIdx++) {
+    const needed = pageCapacities[pIdx] - allocatedPages[pIdx].length;
+    if (needed > 0 && overflow.length > 0) {
+      allocatedPages[pIdx].push(...overflow.splice(0, needed));
+    }
+  }
+
+  const rawPages = allocatedPages
+    .map((arts, idx) => {
+      const slot = BROADSHEET_25_SLOTS[idx % BROADSHEET_25_SLOTS.length];
+      return {
+        pageNumber: idx + 1,
+        sectionTitle: lang === 'hi' ? slot.hiTitle : slot.enTitle,
+        subtitle: `${lang === 'hi' ? slot.hiSub : slot.enSub} · ${dateStr}`,
+        articles: arts,
+      };
+    })
+    .filter((p) => p.articles.length > 0);
+
+  return localizeEditionPageHeaders(
+    rawPages.map((p, idx) => ({ ...p, pageNumber: idx + 1 })),
+    dateStr,
+    lang,
+  );
 }
 
 export function getSetting(key: string, fallback = ''): string {

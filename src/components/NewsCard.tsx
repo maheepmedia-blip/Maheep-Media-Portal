@@ -48,14 +48,15 @@ export function NewsCard({ article, variant = 'standard' }: NewsCardProps) {
       <article className="group grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch pb-8 border-b border-neutral-200 dark:border-neutral-800">
         <div className="lg:col-span-7 flex flex-col">
           <div className="overflow-hidden rounded-lg bg-neutral-100 dark:bg-neutral-900 aspect-[16/10] lg:flex-1 lg:min-h-[340px]">
-            <Link to={`/news/${article.slug}`} className="block w-full h-full">
-              <ArticleImage
-                src={article.image_url}
-                alt={article.title}
-                category={article.category_name}
-                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-              />
-            </Link>
+            <ArticleImage
+              src={article.image_url}
+              alt={article.title}
+              href={`/news/${article.slug}`}
+              category={article.category_name}
+              sourceName={article.source_name}
+              imageRights={article.image_rights}
+              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+            />
           </div>
           {article.image_rights && (
             <p className="mt-1.5 text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
@@ -104,14 +105,17 @@ export function NewsCard({ article, variant = 'standard' }: NewsCardProps) {
 
   return (
     <article className="group flex flex-col bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg overflow-hidden transition-colors hover:border-[#00652E]/40 dark:hover:border-[#159B42]/50">
-      <Link to={`/news/${article.slug}`} className="block aspect-[4/3] overflow-hidden bg-neutral-100 dark:bg-neutral-800">
+      <div className="block aspect-[4/3] overflow-hidden bg-neutral-100 dark:bg-neutral-800">
         <ArticleImage
           src={article.image_url}
           alt={article.title}
+          href={`/news/${article.slug}`}
           category={article.category_name}
+          sourceName={article.source_name}
+          imageRights={article.image_rights}
           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
         />
-      </Link>
+      </div>
       <div className="p-4 flex-1 flex flex-col justify-between">
         <div>
           <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-xs text-neutral-500 dark:text-neutral-400 mb-2">

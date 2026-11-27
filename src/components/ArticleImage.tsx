@@ -1,14 +1,29 @@
 import { Newspaper } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { VerifiedAuthenticBadge } from './VerifiedAuthenticBadge.tsx';
 
 interface ArticleImageProps {
   src?: string;
   alt: string;
+  href?: string;
   category?: string;
+  sourceName?: string;
+  imageRights?: string;
+  showAuthenticBadge?: boolean;
   className?: string;
 }
 
-export function ArticleImage({ src, alt, category, className = 'w-full h-full object-cover' }: ArticleImageProps) {
+export function ArticleImage({
+  src,
+  alt,
+  href,
+  category,
+  sourceName,
+  imageRights,
+  showAuthenticBadge = true,
+  className = 'w-full h-full object-cover',
+}: ArticleImageProps) {
   const [failed, setFailed] = useState(false);
   const [useProxyFallback, setUseProxyFallback] = useState(false);
 
@@ -23,7 +38,7 @@ export function ArticleImage({ src, alt, category, className = 'w-full h-full ob
       : src;
 
   if (!resolvedSrc || failed) {
-    return (
+    const fallbackNode = (
       <div
         className={`flex flex-col items-center justify-center bg-gradient-to-br from-[#EAF5E5] via-neutral-100 to-neutral-200 dark:from-[#00451F]/40 dark:via-neutral-900 dark:to-neutral-800 text-[#00652E] dark:text-[#EAF5E5] p-6 text-center select-none ${className}`}
         role="img"
@@ -35,9 +50,16 @@ export function ArticleImage({ src, alt, category, className = 'w-full h-full ob
         </span>
       </div>
     );
+    return href ? (
+      <Link to={href} className="block w-full h-full">
+        {fallbackNode}
+      </Link>
+    ) : (
+      fallbackNode
+    );
   }
 
-  return (
+  const imageElement = (
     <img
       src={resolvedSrc}
       alt={alt}
@@ -53,5 +75,27 @@ export function ArticleImage({ src, alt, category, className = 'w-full h-full ob
       }}
       className={className}
     />
+  );
+
+  return (
+    <div className="relative w-full h-full">
+      {href ? (
+        <Link to={href} className="block w-full h-full">
+          {imageElement}
+        </Link>
+      ) : (
+        imageElement
+      )}
+      {showAuthenticBadge && (
+        <div className="absolute bottom-2.5 right-2.5 z-10">
+          <VerifiedAuthenticBadge
+            variant="overlay"
+            sourceName={sourceName}
+            imageRights={imageRights}
+            category={category}
+          />
+        </div>
+      )}
+    </div>
   );
 }

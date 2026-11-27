@@ -30,7 +30,12 @@ import {
   sendCustomNewsletterCampaign,
   sendNewsletterConfirmationEmail,
 } from './email.ts';
-import { generateEditionForDate, renderEditionPrintableHtml } from './epaper.ts';
+import {
+  buildLocalizedEditionRow,
+  generateEditionForDate,
+  renderEditionPrintableHtml,
+  translateSingleEditionPage,
+} from './epaper.ts';
 import {
   type AiAssistAction,
   type ReaderAiMode,
@@ -44,9 +49,11 @@ import { ALL_JOB_NAMES, type JobName, listRecentCronRuns, runManagedJob } from '
 import { broadcastBreakingPush, ensureVapidConfigured, removePushSubscription, savePushSubscription } from './push.ts';
 import {
   type ReaderAuthenticatedRequest,
+  authenticateOrRegisterGoogleReader,
   authenticateReaderAccount,
   registerReaderAccount,
   requireReader,
+  verifyFirebaseGoogleIdToken,
 } from './readerAuth.ts';
 import {
   backfillArticleRealPhotos,
@@ -59,7 +66,10 @@ import {
   titleSimilarity,
   validateExternalFeedUrl,
 } from './rss.ts';
+import { translateNewsItems, type TranslatableNewsItem } from './translator.ts';
 import { getWeatherForecast } from './weather.ts';
+import { getExpandedDispatchDetail, getPagedScopeWire, type WireScopeType } from './wire300.ts';
+import { COUNTRIES_DIRECTORY } from '../shared/countries.ts';
 
 function sanitizeSafeUrl(raw: unknown): string {
   const s = String(raw || '').trim();
@@ -461,7 +471,6 @@ export function registerApiRoutes(app: Express): void {
   };
 
   app.get('/api/edition-dates', (req, res) => {
-    const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : null;
     const editionRaw = String(req.query.edition || 'all').trim();
     const stateRaw = String(req.query.state || '').trim();
     const cityRaw = String(req.query.city || '').trim();
@@ -469,10 +478,6 @@ export function registerApiRoutes(app: Express): void {
 
     const conditions = ["a.status = 'published'", "a.published_at IS NOT NULL", "a.published_at != ''"];
     const params: unknown[] = [...ed.params];
-    if (lang) {
-      conditions.push('a.language = ?');
-      params.push(lang);
-    }
 
     const whereSql = `${conditions.join(' AND ')}${ed.sql}`;
     const dates = db
@@ -508,8 +513,9 @@ export function registerApiRoutes(app: Express): void {
     });
   });
 
-  app.get('/api/home', (req, res) => {
-    const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : null;
+  app.get('/api/home', async (req, res) => {
+    const lang: 'all' | 'en' | 'hi' =
+      req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : 'all';
     const editionRaw = String(req.query.edition || 'all').trim();
     const stateRaw = String(req.query.state || '').trim();
     const cityRaw = String(req.query.city || '').trim();
@@ -521,11 +527,6 @@ export function registerApiRoutes(app: Express): void {
     const baseConditions = ["a.status = 'published'"];
     const baseParams: unknown[] = [];
 
-    if (lang) {
-      baseConditions.push('a.language = ?');
-      baseParams.push(lang);
-    }
-
     const dateClause = validDate
       ? " AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)"
       : '';
@@ -534,37 +535,34 @@ export function registerApiRoutes(app: Express): void {
     const fullWhere = `${baseConditions.join(' AND ')}${ed.sql}${dateClause}`;
     const fullParams = [...baseParams, ...ed.params, ...dateParams];
 
-    const langOnlyClause = lang ? ' AND a.language = ?' : '';
-    const langOnlyParams = lang ? [lang] : [];
+    let breaking = db
+      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' AND a.breaking = 1${ed.sql} ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 10`)
+      .all(...ed.params) as TranslatableNewsItem[];
 
-    const breaking = db
-      .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published' AND a.breaking = 1${langOnlyClause}${ed.sql} ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 10`)
-      .all(...langOnlyParams, ...ed.params);
-
-    const featured = db
+    let featured = db
       .prepare(`${ARTICLE_SELECT} WHERE ${fullWhere} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN TRIM(COALESCE(a.image_url, '')) != '' AND a.image_url NOT LIKE '/src/assets/%' THEN 0 ELSE 1 END, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.featured DESC, a.breaking DESC, a.published_at DESC LIMIT 6`)
-      .all(...fullParams) as Array<{ id: string }>;
+      .all(...fullParams) as TranslatableNewsItem[];
 
-    const excludeFeaturedIds = featured.map((a) => a.id);
+    const excludeFeaturedIds = featured.map((a) => String(a.id || ''));
     const notFeaturedClause =
       excludeFeaturedIds.length > 0
         ? ` AND a.id NOT IN (${excludeFeaturedIds.map(() => '?').join(',')})`
         : '';
 
-    const latest = db
+    let latest = db
       .prepare(`${ARTICLE_SELECT} WHERE ${fullWhere}${notFeaturedClause} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN TRIM(COALESCE(a.image_url, '')) != '' AND a.image_url NOT LIKE '/src/assets/%' THEN 0 ELSE 1 END, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT 24`)
-      .all(...fullParams, ...excludeFeaturedIds) as Array<{ id: string }>;
+      .all(...fullParams, ...excludeFeaturedIds) as TranslatableNewsItem[];
 
-    const trending = db
+    let trending = db
       .prepare(`${ARTICLE_SELECT} WHERE ${fullWhere} ORDER BY a.views DESC, a.published_at DESC LIMIT 6`)
-      .all(...fullParams);
+      .all(...fullParams) as TranslatableNewsItem[];
 
     const querySection = (whereExtra: string, limit = 4) =>
       db
-        .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${langOnlyClause}${dateClause}${notFeaturedClause} AND (${whereExtra}) ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN TRIM(COALESCE(a.image_url, '')) != '' AND a.image_url NOT LIKE '/src/assets/%' THEN 0 ELSE 1 END, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT ?`)
-        .all(...langOnlyParams, ...dateParams, ...excludeFeaturedIds, limit);
+        .prepare(`${ARTICLE_SELECT} WHERE a.status = 'published'${dateClause}${notFeaturedClause} AND (${whereExtra}) ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN TRIM(COALESCE(a.image_url, '')) != '' AND a.image_url NOT LIKE '/src/assets/%' THEN 0 ELSE 1 END, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT ?`)
+        .all(...dateParams, ...excludeFeaturedIds, limit) as TranslatableNewsItem[];
 
-    const sections = {
+    let sections = {
       national: querySection("c.slug IN ('national', 'international')", 4),
       state: querySection("c.slug = 'state' OR a.state_id IS NOT NULL", 4),
       business: querySection("c.slug = 'business'", 4),
@@ -572,6 +570,51 @@ export function registerApiRoutes(app: Express): void {
       technology: querySection("c.slug IN ('technology', 'science')", 4),
       education: querySection("c.slug IN ('education', 'entertainment')", 4),
     };
+
+    // Translate the EXACT same canonical homepage stories without swapping them when language changes
+    if (lang === 'hi' || lang === 'en') {
+      const uniqueMap = new Map<string, TranslatableNewsItem>();
+      const registerPool = (arr: TranslatableNewsItem[]) => {
+        for (const item of arr) {
+          const id = String(item.id || '');
+          if (id && !uniqueMap.has(id)) uniqueMap.set(id, item);
+        }
+      };
+      registerPool(featured);
+      registerPool(breaking);
+      registerPool(latest);
+      registerPool(trending);
+      registerPool(sections.national);
+      registerPool(sections.state);
+      registerPool(sections.business);
+      registerPool(sections.sports);
+      registerPool(sections.technology);
+      registerPool(sections.education);
+
+      const translatedList = await translateNewsItems(Array.from(uniqueMap.values()), lang, {
+        translateBody: false,
+        maxLive: 45,
+      });
+      const byId = new Map<string, TranslatableNewsItem>();
+      for (const item of translatedList) {
+        if (item.id) byId.set(String(item.id), item);
+      }
+      const remap = (arr: TranslatableNewsItem[]) =>
+        arr.map((it) => (it.id && byId.get(String(it.id))) || it);
+
+      breaking = remap(breaking);
+      featured = remap(featured);
+      latest = remap(latest);
+      trending = remap(trending);
+      sections = {
+        national: remap(sections.national),
+        state: remap(sections.state),
+        business: remap(sections.business),
+        sports: remap(sections.sports),
+        technology: remap(sections.technology),
+        education: remap(sections.education),
+      };
+    }
 
     const categories = db.prepare('SELECT * FROM categories ORDER BY name ASC').all();
     const states = db
@@ -584,15 +627,27 @@ export function registerApiRoutes(app: Express): void {
       `)
       .all();
 
-    const latestEdition =
+    const latestEditionRaw =
       (validDate
         ? db
             .prepare("SELECT id, edition_date, title, pdf_url, cover_image, page_count, article_count, status FROM editions WHERE status = 'published' AND edition_date = ? LIMIT 1")
             .get(validDate)
         : null) ||
-      db
+      (db
         .prepare("SELECT id, edition_date, title, pdf_url, cover_image, page_count, article_count, status FROM editions WHERE status = 'published' ORDER BY edition_date DESC LIMIT 1")
-        .get();
+        .get() as Record<string, unknown> | undefined);
+
+    const latestEdition = latestEditionRaw
+      ? {
+          ...latestEditionRaw,
+          title:
+            lang === 'hi'
+              ? `महीप दैनिक ई-पेपर (हिंदी संस्करण) — ${String((latestEditionRaw as Record<string, unknown>).edition_date || '')}`
+              : lang === 'en'
+                ? `Maheep Digital Broadsheet (English Edition) — ${String((latestEditionRaw as Record<string, unknown>).edition_date || '')}`
+                : (latestEditionRaw as Record<string, unknown>).title,
+        }
+      : latestEditionRaw;
 
     res.setHeader('Cache-Control', 'no-store');
     res.json({
@@ -616,13 +671,15 @@ export function registerApiRoutes(app: Express): void {
     });
   });
 
-  app.get('/api/articles', (req, res) => {
+  app.get('/api/articles', async (req, res) => {
     const q = String(req.query.q || '').trim();
     const category = String(req.query.category || '').trim();
     const edition = String(req.query.edition || '').trim();
     const state = String(req.query.state || '').trim();
     const city = String(req.query.city || '').trim();
-    const language = String(req.query.language || '').trim();
+    const langRaw = String(req.query.lang || req.query.language || '').trim();
+    const targetLang: 'all' | 'en' | 'hi' =
+      langRaw === 'hi' || langRaw === 'en' ? langRaw : 'all';
     const date = String(req.query.date || '').trim();
     const subtopic = String(req.query.subtopic || '').trim();
     const limit = Math.min(60, Math.max(1, Number(req.query.limit) || 24));
@@ -657,10 +714,6 @@ export function registerApiRoutes(app: Express): void {
       conditions.push('ct.slug = ?');
       params.push(city);
     }
-    if (language === 'en' || language === 'hi') {
-      conditions.push('a.language = ?');
-      params.push(language);
-    }
     if (date) {
       conditions.push("date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)");
       params.push(date);
@@ -671,11 +724,16 @@ export function registerApiRoutes(app: Express): void {
     }
 
     const whereSql = conditions.join(' AND ');
-    const items = db
+    const rawItems = db
       .prepare(
         `${ARTICLE_SELECT} WHERE ${whereSql} ORDER BY date(datetime(a.published_at, '+5 hours', '+30 minutes')) DESC, CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC LIMIT ? OFFSET ?`,
       )
-      .all(...params, limit, offset);
+      .all(...params, limit, offset) as TranslatableNewsItem[];
+
+    const items =
+      targetLang === 'hi' || targetLang === 'en'
+        ? await translateNewsItems(rawItems, targetLang, { translateBody: false, maxLive: 24 })
+        : rawItems;
 
     const totalRow = db
       .prepare(`
@@ -688,39 +746,58 @@ export function registerApiRoutes(app: Express): void {
       `)
       .get(...params) as { total: number };
 
+    res.setHeader('Cache-Control', 'no-store');
     res.json({ articles: items, total: totalRow.total });
   });
 
-  app.get('/api/articles/:slug', (req, res) => {
+  app.get('/api/articles/:slug', async (req, res) => {
     const slug = String(req.params.slug || '').trim();
-    const article = db
+    const targetLang: 'all' | 'en' | 'hi' =
+      req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : 'all';
+
+    const rawArticle = db
       .prepare(`${ARTICLE_SELECT} WHERE a.slug = ? AND a.status = 'published'`)
       .get(slug) as Record<string, unknown> | undefined;
 
-    if (!article) {
+    if (!rawArticle) {
       res.status(404).json({ error: 'Article not found.' });
       return;
     }
 
-    db.prepare('UPDATE articles SET views = views + 1 WHERE id = ?').run(article.id);
+    db.prepare('UPDATE articles SET views = views + 1 WHERE id = ?').run(rawArticle.id);
     db.prepare(`
       INSERT INTO analytics_events (id, event_type, path, article_id, category_slug, language)
       VALUES (?, 'article_view', ?, ?, ?, ?)
     `).run(
       `ana-${crypto.randomUUID().slice(0, 10)}`,
       `/news/${slug}`,
-      String(article.id),
-      String(article.category_slug || ''),
-      String(article.language || 'en'),
+      String(rawArticle.id),
+      String(rawArticle.category_slug || ''),
+      String(rawArticle.language || 'en'),
     );
 
-    const related = db
+    const rawRelated = db
       .prepare(`
         ${ARTICLE_SELECT}
         WHERE a.status = 'published' AND a.id != ? AND (a.category_id = ? OR a.state_id = ?)
         ORDER BY a.published_at DESC LIMIT 4
       `)
-      .all(article.id, article.category_id, article.state_id);
+      .all(rawArticle.id, rawArticle.category_id, rawArticle.state_id) as TranslatableNewsItem[];
+
+    const article =
+      targetLang === 'hi' || targetLang === 'en'
+        ? (
+            await translateNewsItems([rawArticle as unknown as TranslatableNewsItem], targetLang, {
+              translateBody: true,
+              maxLive: 1,
+            })
+          )[0] || rawArticle
+        : rawArticle;
+
+    const related =
+      targetLang === 'hi' || targetLang === 'en'
+        ? await translateNewsItems(rawRelated, targetLang, { translateBody: false, maxLive: 4 })
+        : rawRelated;
 
     const comments = db
       .prepare(`
@@ -730,8 +807,9 @@ export function registerApiRoutes(app: Express): void {
         ORDER BY created_at DESC
         LIMIT 100
       `)
-      .all(article.id);
+      .all(rawArticle.id);
 
+    res.setHeader('Cache-Control', 'no-store');
     res.json({ article, related, comments });
   });
 
@@ -907,7 +985,8 @@ export function registerApiRoutes(app: Express): void {
 
     const dateRaw = String(req.query.date || '').trim();
     const activeDate = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : todayIst;
-    const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : null;
+    const targetLang: 'all' | 'en' | 'hi' =
+      req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : 'all';
     const forceRefresh = req.query.refresh === '1';
 
     const existingCityCount = (
@@ -923,38 +1002,33 @@ export function registerApiRoutes(app: Express): void {
       wireStatus = await fetchLiveCityWire(city, forceRefresh);
     }
 
-    const langClause = lang ? ' AND a.language = ?' : '';
-    const langParams = lang ? [lang] : [];
-
-    const cityArticles = db
+    let cityArticles = db
       .prepare(`
         ${ARTICLE_SELECT}
         WHERE a.status = 'published'
           AND a.city_id = ?
           AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
-          ${langClause}
         ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC
         LIMIT 20
       `)
-      .all(city.id, activeDate, ...langParams) as Array<{ id: string }>;
+      .all(city.id, activeDate) as TranslatableNewsItem[];
 
-    const excludeIds = new Set(cityArticles.map((a) => a.id));
+    const excludeIds = new Set(cityArticles.map((a) => String(a.id || '')));
 
     const recentCityRaw = db
       .prepare(`
         ${ARTICLE_SELECT}
         WHERE a.status = 'published'
           AND a.city_id = ?
-          ${langClause}
         ORDER BY a.published_at DESC
         LIMIT 16
       `)
-      .all(city.id, ...langParams) as Array<{ id: string }>;
+      .all(city.id) as TranslatableNewsItem[];
 
-    const recentCityArticles = recentCityRaw.filter((a) => !excludeIds.has(a.id));
-    for (const a of recentCityArticles) excludeIds.add(a.id);
+    let recentCityArticles = recentCityRaw.filter((a) => !excludeIds.has(String(a.id || '')));
+    for (const a of recentCityArticles) excludeIds.add(String(a.id || ''));
 
-    let stateArticles: Array<Record<string, unknown>> = [];
+    let stateArticles: TranslatableNewsItem[] = [];
     if (city.state_id) {
       const dateStateRows = db
         .prepare(`
@@ -962,22 +1036,20 @@ export function registerApiRoutes(app: Express): void {
           WHERE a.status = 'published'
             AND a.state_id = ?
             AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
-            ${langClause}
           ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC
           LIMIT 16
         `)
-        .all(city.state_id, activeDate, ...langParams) as Array<Record<string, unknown>>;
+        .all(city.state_id, activeDate) as TranslatableNewsItem[];
 
       const recentStateRows = db
         .prepare(`
           ${ARTICLE_SELECT}
           WHERE a.status = 'published'
             AND a.state_id = ?
-            ${langClause}
           ORDER BY a.published_at DESC
           LIMIT 16
         `)
-        .all(city.state_id, ...langParams) as Array<Record<string, unknown>>;
+        .all(city.state_id) as TranslatableNewsItem[];
 
       const seenStateIds = new Set(excludeIds);
       for (const row of [...dateStateRows, ...recentStateRows]) {
@@ -988,6 +1060,21 @@ export function registerApiRoutes(app: Express): void {
         }
         if (stateArticles.length >= 12) break;
       }
+    }
+
+    if (targetLang === 'hi' || targetLang === 'en') {
+      const combined = [...cityArticles, ...recentCityArticles, ...stateArticles];
+      const translated = await translateNewsItems(combined, targetLang, {
+        translateBody: false,
+        maxLive: 24,
+      });
+      const byId = new Map<string, TranslatableNewsItem>();
+      for (const item of translated) {
+        if (item.id) byId.set(String(item.id), item);
+      }
+      cityArticles = cityArticles.map((it) => (it.id && byId.get(String(it.id))) || it);
+      recentCityArticles = recentCityArticles.map((it) => (it.id && byId.get(String(it.id))) || it);
+      stateArticles = stateArticles.map((it) => (it.id && byId.get(String(it.id))) || it);
     }
 
     const availableDates = db
@@ -1019,18 +1106,139 @@ export function registerApiRoutes(app: Express): void {
     });
   });
 
-  app.get('/api/editions', (req, res) => {
+  app.get('/api/epaper/countries', (_req, res) => {
+    res.json({ countries: COUNTRIES_DIRECTORY });
+  });
+
+  app.get('/api/epaper/wire300', async (req, res) => {
+    const scopeRaw = String(req.query.scope || 'city').trim().toLowerCase();
+    const scopeType: WireScopeType =
+      scopeRaw === 'state' || scopeRaw === 'country' ? scopeRaw : 'city';
+    const slug = String(
+      req.query.slug || (scopeType === 'city' ? 'mumbai' : scopeType === 'state' ? 'maharashtra' : 'india'),
+    )
+      .trim()
+      .toLowerCase();
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(40, Math.max(10, Number(req.query.pageSize) || 12));
+    const beat = String(req.query.beat || 'all').trim();
+    const q = String(req.query.q || '').trim();
+    const date = String(req.query.date || '').trim();
+    const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : 'all';
+    const forceRefresh = req.query.refresh === '1';
+
+    try {
+      const payload = await getPagedScopeWire({
+        scopeType,
+        scopeSlug: slug,
+        page,
+        pageSize,
+        beat,
+        q,
+        date,
+        lang,
+        forceRefresh,
+      });
+      if (!payload) {
+        res.status(404).json({ error: `Requested ${scopeType} edition was not found.` });
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(payload);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Unable to load 300-story E-Paper wire.' });
+    }
+  });
+
+  app.get('/api/epaper/wire300/detail', async (req, res) => {
+    const id = String(req.query.id || '').trim();
+    const lang: 'all' | 'en' | 'hi' =
+      req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : 'all';
+    if (!id) {
+      res.status(400).json({ error: 'Dispatch id is required.' });
+      return;
+    }
+    try {
+      const detail = await getExpandedDispatchDetail(id, lang);
+      if (!detail) {
+        res.status(404).json({ error: 'Dispatch not found.' });
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ detail });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Unable to load detailed dispatch.' });
+    }
+  });
+
+  app.get('/api/editions', async (req, res) => {
     const month = String(req.query.month || '').trim();
+    const activeDate = String(req.query.date || '').trim();
+    const activePage = Math.max(1, Number(req.query.page) || 1);
+    const lang: 'all' | 'en' | 'hi' =
+      req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : 'all';
     let rows;
     if (month && /^\d{4}-\d{2}$/.test(month)) {
       rows = db
         .prepare("SELECT * FROM editions WHERE status = 'published' AND strftime('%Y-%m', edition_date) = ? ORDER BY edition_date DESC")
         .all(month);
     } else {
-      rows = db.prepare("SELECT * FROM editions WHERE status = 'published' ORDER BY edition_date DESC LIMIT 60").all();
+      rows = db.prepare("SELECT * FROM editions WHERE status = 'published' ORDER BY edition_date DESC LIMIT 30").all();
+    }
+    const typedRows = rows as Array<{
+      id: string;
+      edition_date: string;
+      title: string;
+      pdf_url: string;
+      cover_image: string;
+      page_count: number;
+      article_count: number;
+      status: string;
+      content_json: string;
+      created_at: string;
+    }>;
+
+    let editions = typedRows;
+    if (lang !== 'all') {
+      const hasDateMatch = activeDate && typedRows.some((r) => r.edition_date === activeDate);
+      editions = await Promise.all(
+        typedRows.map((row, idx) => {
+          const isTargetEdition = hasDateMatch ? row.edition_date === activeDate : idx === 0;
+          return buildLocalizedEditionRow(row, lang, {
+            activePage: isTargetEdition ? activePage : 1,
+            skipLive: !isTargetEdition,
+          });
+        }),
+      );
     }
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ editions: rows });
+    res.json({ editions });
+  });
+
+  app.get('/api/editions/:id/page/:pageNumber', async (req, res) => {
+    const idOrDate = String(req.params.id || '').trim();
+    const pageNumber = Math.max(1, Number(req.params.pageNumber) || 1);
+    const lang: 'all' | 'en' | 'hi' =
+      req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : 'all';
+
+    const edition = db
+      .prepare('SELECT id, edition_date, content_json FROM editions WHERE id = ? OR edition_date = ?')
+      .get(idOrDate, idOrDate) as
+      | { id: string; edition_date: string; content_json: string }
+      | undefined;
+
+    if (!edition) {
+      res.status(404).json({ error: 'Edition not found.' });
+      return;
+    }
+
+    const page = await translateSingleEditionPage(edition, pageNumber, lang);
+    if (!page) {
+      res.status(404).json({ error: 'Edition page not found.' });
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ page });
   });
 
   app.get('/api/editions/search', (req, res) => {
@@ -1092,12 +1300,24 @@ export function registerApiRoutes(app: Express): void {
     res.json({ matches: matches.slice(0, 60) });
   });
 
-  app.get('/api/editions/:id/html', (req, res) => {
+  app.get('/api/editions/:id/html', async (req, res) => {
     const idOrDate = String(req.params.id || '').trim();
+    const lang = req.query.lang === 'hi' || req.query.lang === 'en' ? req.query.lang : 'all';
     const edition = db
       .prepare('SELECT * FROM editions WHERE id = ? OR edition_date = ?')
       .get(idOrDate, idOrDate) as
-      | { id: string; edition_date: string; title: string; content_json: string }
+      | {
+          id: string;
+          edition_date: string;
+          title: string;
+          pdf_url: string;
+          cover_image: string;
+          page_count: number;
+          article_count: number;
+          status: string;
+          content_json: string;
+          created_at: string;
+        }
       | undefined;
 
     if (!edition) {
@@ -1105,9 +1325,10 @@ export function registerApiRoutes(app: Express): void {
       return;
     }
 
+    const localized = await buildLocalizedEditionRow(edition, lang, { translateAll: true });
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(renderEditionPrintableHtml(edition));
+    res.send(renderEditionPrintableHtml(localized));
   });
 
   app.get('/api/ads', (req, res) => {
@@ -1702,6 +1923,26 @@ export function registerApiRoutes(app: Express): void {
       return;
     }
     res.json(session);
+  });
+
+  app.post('/api/reader/google-auth', async (req, res) => {
+    const ip = req.ip || 'unknown';
+    if (!checkRateLimit(`reader-google:${ip}`, 15, 10 * 60_000)) {
+      res.status(429).json({ error: 'Too many Google sign-in attempts. Please wait a few minutes.' });
+      return;
+    }
+    const idToken = typeof req.body?.idToken === 'string' ? req.body.idToken.trim() : '';
+    if (!idToken || idToken.length > 8192) {
+      res.status(400).json({ error: 'A valid Google ID token is required.' });
+      return;
+    }
+    try {
+      const verified = await verifyFirebaseGoogleIdToken(idToken);
+      const session = authenticateOrRegisterGoogleReader(verified);
+      res.status(session.isNewAccount ? 201 : 200).json(session);
+    } catch (err) {
+      res.status(401).json({ error: err instanceof Error ? err.message : 'Google authentication failed.' });
+    }
   });
 
   app.get('/api/reader/me', requireReader, (req: ReaderAuthenticatedRequest, res) => {

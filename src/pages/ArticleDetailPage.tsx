@@ -28,7 +28,7 @@ type ReaderAiMode = 'summary' | 'explain' | 'student' | 'points' | 'translate' |
 
 export function ArticleDetailPage() {
   const { slug } = useParams<{ slug: string }>();
-  const { fontSize, setFontSize, readerToken, readerUser, setReaderDrawerOpen } = usePortal();
+  const { language, fontSize, setFontSize, readerToken, readerUser, setReaderDrawerOpen } = usePortal();
 
   const [article, setArticle] = useState<Article | null>(null);
   const [related, setRelated] = useState<Article[]>([]);
@@ -68,7 +68,7 @@ export function ArticleDetailPage() {
       window.speechSynthesis.cancel();
       setSpeaking(false);
     }
-    fetch(`/api/articles/${encodeURIComponent(slug || '')}`)
+    fetch(`/api/articles/${encodeURIComponent(slug || '')}?lang=${encodeURIComponent(language)}`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('Not found'))))
       .then((json) => {
         setArticle(json.article);
@@ -77,7 +77,7 @@ export function ArticleDetailPage() {
       })
       .catch(() => setArticle(null))
       .finally(() => setLoading(false));
-  }, [slug]);
+  }, [slug, language]);
 
   useEffect(() => {
     return () => {
@@ -559,7 +559,13 @@ export function ArticleDetailPage() {
             {article.image_url && (
               <figure className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900">
                 <div className="aspect-[16/9] max-h-[460px] w-full">
-                  <ArticleImage src={article.image_url} alt={article.title} category={article.category_name} />
+                  <ArticleImage
+                    src={article.image_url}
+                    alt={article.title}
+                    category={article.category_name}
+                    sourceName={article.source_name}
+                    imageRights={article.image_rights}
+                  />
                 </div>
                 <figcaption className="px-4 py-2 text-xs text-neutral-500 dark:text-neutral-400">
                   Photo credit: {article.source_name} · Rights: {article.image_rights || 'Editorial Attribution'}

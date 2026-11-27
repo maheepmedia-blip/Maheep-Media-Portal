@@ -4,6 +4,7 @@ import {
   Bookmark,
   BookOpen,
   Clock,
+  ExternalLink,
   Flame,
   Heart,
   LogOut,
@@ -11,11 +12,35 @@ import {
   User,
   X,
 } from 'lucide-react';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { type FontSizeScale, type LanguageFilter, usePortal } from '../context/PortalContext.tsx';
+import {
+  GOOGLE_OAUTH_CLIENT_ID,
+  signInReaderWithGoogle,
+  signInReaderWithGoogleRedirect,
+  syncFirebaseWithGoogleCredential,
+} from '../firebase.ts';
 import type { Article, ReaderEpaperBookmark, ReaderFollow } from '../types/news.ts';
 import { formatIndiaDate } from '../utils/date.ts';
+
+interface GisWindow {
+  google?: {
+    accounts?: {
+      id?: {
+        initialize: (cfg: {
+          client_id: string;
+          callback: (resp: { credential?: string }) => void;
+          use_fedcm_for_prompt?: boolean;
+        }) => void;
+        renderButton: (
+          el: HTMLElement,
+          opts: { theme?: string; size?: string; width?: number; text?: string; shape?: string },
+        ) => void;
+      };
+    };
+  };
+}
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -60,6 +85,10 @@ export function ReaderDrawer() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [popupHelpNeeded, setPopupHelpNeeded] = useState(false);
+  const [gisReady, setGisReady] = useState(false);
+  const gisButtonRef = useRef<HTMLDivElement | null>(null);
 
   const [bookmarks, setBookmarks] = useState<Article[]>([]);
   const [epaperBookmarks, setEpaperBookmarks] = useState<ReaderEpaperBookmark[]>([]);
@@ -69,6 +98,16 @@ export function ReaderDrawer() {
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const [profileName, setProfileName] = useState(readerUser?.name || '');
+
+  const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+  const newTabSignInUrl =
+    typeof window !== 'undefined'
+      ? (() => {
+          const u = new URL(window.location.href);
+          u.searchParams.set('readerAuth', '1');
+          return u.toString();
+        })()
+      : '/?readerAuth=1';
 
   useEffect(() => {
     if (readerUser?.name) setProfileName(readerUser.name);
@@ -111,6 +150,93 @@ export function ReaderDrawer() {
     }
   }, [readerDrawerOpen]);
 
+  const exchangeGoogleIdToken = useCallback(
+    async (idToken: string, syncFirebase = false) => {
+      if (syncFirebase) {
+        void syncFirebaseWithGoogleCredential(idToken).catch(() => {});
+      }
+      const res = await fetch('/api/reader/google-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Google sign-up failed');
+      setReaderSession(json.token, json.user);
+      setPopupHelpNeeded(false);
+      setNotice(
+        json.isNewAccount
+          ? `Welcome to Maheep News Portal, ${json.user.name}. Your Google reader account is ready.`
+          : `Signed in with Google as ${json.user.name}.`,
+      );
+    },
+    [setReaderSession],
+  );
+
+  useEffect(() => {
+    if (!readerDrawerOpen || readerUser || !GOOGLE_OAUTH_CLIENT_ID || typeof window === 'undefined') return;
+    let active = true;
+
+    const initGis = () => {
+      const gisId = (window as unknown as GisWindow).google?.accounts?.id;
+      const target = gisButtonRef.current;
+      if (!active || !gisId || !target) return;
+      try {
+        gisId.initialize({
+          client_id: GOOGLE_OAUTH_CLIENT_ID,
+          use_fedcm_for_prompt: true,
+          callback: (resp) => {
+            if (!resp.credential) return;
+            setGoogleLoading(true);
+            setError('');
+            setNotice('');
+            void exchangeGoogleIdToken(resp.credential, true)
+              .catch((err) => {
+                setError(err instanceof Error ? err.message : 'Unable to complete Google sign-in.');
+              })
+              .finally(() => setGoogleLoading(false));
+          },
+        });
+        target.innerHTML = '';
+        gisId.renderButton(target, {
+          theme: 'outline',
+          size: 'large',
+          width: Math.min(360, target.clientWidth || 340),
+          text: 'continue_with',
+          shape: 'rectangular',
+        });
+        setGisReady(true);
+      } catch {
+        setGisReady(false);
+      }
+    };
+
+    const existingGis = (window as unknown as GisWindow).google?.accounts?.id;
+    if (existingGis) {
+      initGis();
+      return () => {
+        active = false;
+      };
+    }
+
+    const scriptId = 'google-gsi-client-script';
+    let script = document.getElementById(scriptId) as HTMLScriptElement | null;
+    if (!script) {
+      script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+    }
+    const onLoad = () => initGis();
+    script.addEventListener('load', onLoad);
+    return () => {
+      active = false;
+      script?.removeEventListener('load', onLoad);
+    };
+  }, [readerDrawerOpen, readerUser, exchangeGoogleIdToken]);
+
   if (!readerDrawerOpen) return null;
 
   const handleAuth = async (e: React.FormEvent) => {
@@ -134,6 +260,50 @@ export function ReaderDrawer() {
       setError(err instanceof Error ? err.message : 'Unable to sign in');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleAuth = async () => {
+    setGoogleLoading(true);
+    setError('');
+    setNotice('');
+    setPopupHelpNeeded(false);
+    try {
+      const cred = await signInReaderWithGoogle();
+      const idToken = await cred.user.getIdToken();
+      await exchangeGoogleIdToken(idToken, false);
+    } catch (err: unknown) {
+      const code = typeof err === 'object' && err && 'code' in err ? String((err as { code?: unknown }).code) : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        setError('Google sign-in popup was closed before completing.');
+      } else if (code === 'auth/popup-blocked') {
+        setPopupHelpNeeded(true);
+        setError('Your browser blocked the Google popup inside this preview frame.');
+      } else if (code === 'auth/unauthorized-domain') {
+        setPopupHelpNeeded(true);
+        setError(
+          `Domain "${window.location.hostname}" needs authorization in Firebase Auth settings, or open in a new tab to use Google Sign-In.`,
+        );
+      } else if (code === 'auth/operation-not-allowed') {
+        setPopupHelpNeeded(true);
+        setError('Google Sign-In provider is not yet enabled in Firebase Auth.');
+      } else {
+        setPopupHelpNeeded(true);
+        setError(err instanceof Error ? err.message : 'Unable to open Google sign-up popup.');
+      }
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleGoogleRedirectFallback = async () => {
+    setGoogleLoading(true);
+    setError('');
+    try {
+      await signInReaderWithGoogleRedirect();
+    } catch (err) {
+      setGoogleLoading(false);
+      setError(err instanceof Error ? err.message : 'Unable to start Google redirect sign-in.');
     }
   };
 
@@ -325,8 +495,85 @@ export function ReaderDrawer() {
               <div>
                 <h3 className="text-sm font-bold text-neutral-900 dark:text-white">Optional Reader Account</h3>
                 <p className="text-xs text-neutral-500 mt-0.5">
-                  Sign in optionally to save articles, E-Paper pages, follows, reading streaks, and weekly digest preferences.
+                  Sign up with Google or email to save articles, E-Paper pages, follows, reading streaks, and digest preferences.
                 </p>
+              </div>
+
+              <div className="space-y-2.5">
+                {GOOGLE_OAUTH_CLIENT_ID && (
+                  <div
+                    ref={gisButtonRef}
+                    className={gisReady ? 'w-full flex justify-center min-h-[40px]' : 'hidden'}
+                  />
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleGoogleAuth()}
+                  disabled={googleLoading || loading}
+                  className="w-full py-2.5 px-3 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs font-semibold inline-flex items-center justify-center gap-2.5 transition-colors disabled:opacity-60"
+                >
+                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      fill="#4285F4"
+                      d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.54 5.54 0 0 1-2.4 3.63v3.01h3.88c2.27-2.09 3.54-5.17 3.54-8.88Z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 24c3.24 0 5.95-1.07 7.93-2.9l-3.88-3.01c-1.07.72-2.45 1.15-4.05 1.15-3.12 0-5.76-2.11-6.7-4.95H1.29v3.1A12 12 0 0 0 12 24Z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.3 14.29A7.2 7.2 0 0 1 4.92 12c0-.79.14-1.56.38-2.29V6.61H1.29A12 12 0 0 0 0 12c0 1.94.46 3.77 1.29 5.39l4.01-3.1Z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 4.76c1.76 0 3.34.61 4.58 1.8l3.43-3.43C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.29 6.61l4.01 3.1C6.24 6.87 8.88 4.76 12 4.76Z"
+                    />
+                  </svg>
+                  <span>
+                    {googleLoading
+                      ? 'Connecting to Google...'
+                      : gisReady
+                        ? 'Continue with Google (Firebase Popup)'
+                        : 'Continue with Google'}
+                  </span>
+                </button>
+
+                {(isInIframe || popupHelpNeeded) && (
+                  <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 text-[11px] text-neutral-600 dark:text-neutral-400 space-y-1.5">
+                    {isInIframe && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span>Popup blocked inside preview?</span>
+                        <a
+                          href={newTabSignInUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 font-semibold text-[#00652E] dark:text-[#4ade80] hover:underline shrink-0"
+                        >
+                          Open in New Tab <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    )}
+                    {!isInIframe && popupHelpNeeded && (
+                      <button
+                        type="button"
+                        onClick={() => void handleGoogleRedirectFallback()}
+                        className="w-full py-1.5 px-2.5 rounded border border-[#00652E] text-[#00652E] dark:text-[#4ade80] font-semibold hover:bg-[#EAF5E5] dark:hover:bg-[#00451F]/30 transition-colors"
+                      >
+                        Use Full-Page Google Redirect Instead
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="relative flex items-center py-0.5">
+                <div className="flex-grow border-t border-neutral-200 dark:border-neutral-800" />
+                <span className="px-2.5 text-[11px] uppercase tracking-wider text-neutral-400 font-medium">
+                  or with email
+                </span>
+                <div className="flex-grow border-t border-neutral-200 dark:border-neutral-800" />
               </div>
 
               <div className="flex rounded border border-neutral-200 dark:border-neutral-800 p-0.5 text-xs font-semibold">

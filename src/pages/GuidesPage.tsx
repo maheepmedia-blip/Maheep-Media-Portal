@@ -2,6 +2,7 @@ import { ArrowLeft, BookOpen, CheckSquare, Clock, FileText, PlayCircle, Search, 
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
+import { ArticleImage } from '../components/ArticleImage.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
@@ -203,11 +204,16 @@ export function GuidesPage() {
               )}
 
               {!embedUrl && activeGuide.image_url && (
-                <img
-                  src={activeGuide.image_url}
-                  alt={activeGuide.title}
-                  className="w-full max-h-[420px] object-cover rounded-lg border border-neutral-200 dark:border-neutral-800"
-                />
+                <div className="aspect-[16/9] max-h-[420px] w-full overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
+                  <ArticleImage
+                    src={activeGuide.image_url}
+                    alt={activeGuide.title}
+                    category={activeGuide.category}
+                    sourceName={activeGuide.author || 'Maheep Editorial'}
+                    imageRights="Wikimedia Commons / Editorial Archive"
+                    className="w-full h-full object-cover"
+                  />
+                </div>
               )}
 
               <div className="space-y-4 text-base leading-relaxed text-neutral-800 dark:text-neutral-200">
@@ -308,9 +314,17 @@ export function GuidesPage() {
                   className="border border-neutral-200 dark:border-neutral-800 rounded-lg overflow-hidden bg-white dark:bg-neutral-900 flex flex-col"
                 >
                   {g.image_url && (
-                    <Link to={`/guides/${g.slug}`} className="block aspect-[16/9] bg-neutral-100 dark:bg-neutral-800 overflow-hidden">
-                      <img src={g.image_url} alt={g.title} className="w-full h-full object-cover" loading="lazy" />
-                    </Link>
+                    <div className="block aspect-[16/9] bg-neutral-100 dark:bg-neutral-800 overflow-hidden">
+                      <ArticleImage
+                        src={g.image_url}
+                        alt={g.title}
+                        href={`/guides/${g.slug}`}
+                        category={g.category}
+                        sourceName={g.author || 'Maheep Editorial'}
+                        imageRights="Wikimedia Commons / Editorial Archive"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
                   )}
                   <div className="p-5 flex-1 flex flex-col justify-between space-y-3">
                     <div className="space-y-2">

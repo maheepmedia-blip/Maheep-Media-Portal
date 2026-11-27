@@ -2,7 +2,10 @@ import { initializeApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   getAuth,
+  getRedirectResult,
+  signInWithCredential,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
@@ -14,6 +17,7 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
+export const GOOGLE_OAUTH_CLIENT_ID = firebaseConfig.oAuthClientId || '';
 export const BOOTSTRAP_ADMIN_EMAIL = 'maheepmedia@gmail.com';
 
 export enum OperationType {
@@ -85,5 +89,25 @@ export async function signInFirebaseAdminWithGoogle() {
 }
 
 export async function signOutFirebaseAdmin() {
+  return signOut(auth);
+}
+
+export async function signInReaderWithGoogle() {
+  return signInWithPopup(auth, googleProvider);
+}
+
+export async function signInReaderWithGoogleRedirect() {
+  return signInWithRedirect(auth, googleProvider);
+}
+
+export async function getReaderGoogleRedirectResult() {
+  return getRedirectResult(auth);
+}
+
+export async function syncFirebaseWithGoogleCredential(idToken: string) {
+  return signInWithCredential(auth, GoogleAuthProvider.credential(idToken));
+}
+
+export async function signOutFirebaseReader() {
   return signOut(auth);
 }

@@ -1,4 +1,15 @@
-import { buildEditionPagesPayload, db } from './db.ts';
+import {
+  buildEditionPagesPayload,
+  db,
+  getSetting,
+  localizeEditionPageHeaders,
+  setSetting,
+} from './db.ts';
+import {
+  applyCachedTranslationsSync,
+  translateNewsItems,
+  type TranslatableNewsItem,
+} from './translator.ts';
 
 function escapeHtml(str: string): string {
   return str
@@ -35,8 +46,27 @@ function formatStoryIstTime(iso?: string): string {
   );
 }
 
+const TARGET_EDITION_STORIES = 300;
+
+function mapWireBeatToCategory(
+  scopeType: string,
+  scopeSlug: string,
+  beat: string,
+): { category_slug: string; category_name: string } {
+  if (scopeType === 'city' || scopeType === 'state') {
+    return { category_slug: 'state', category_name: 'Our Pride · States & Cities' };
+  }
+  if (scopeType === 'country' && scopeSlug !== 'india') {
+    return { category_slug: 'international', category_name: 'WorldWire · International' };
+  }
+  if (beat === 'economy') return { category_slug: 'business', category_name: 'Business & Economy' };
+  if (beat === 'culture') return { category_slug: 'sports', category_name: 'Sports & Culture' };
+  if (beat === 'society') return { category_slug: 'science', category_name: 'Science, Tech & Education' };
+  return { category_slug: 'national', category_name: 'National' };
+}
+
 export function generateEditionForDate(editionDate: string) {
-  let published = db
+  const published = db
     .prepare(`
       SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
              a.state_id, a.city_id, c.name as category_name, c.slug as category_slug, s.name as state_name, ct.name as city_name, ct.slug as city_slug
@@ -47,14 +77,34 @@ export function generateEditionForDate(editionDate: string) {
       WHERE a.status = 'published'
         AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) = date(?)
       ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC, a.featured DESC, a.breaking DESC
-      LIMIT 40
+      LIMIT 300
     `)
     .all(editionDate) as Array<Record<string, unknown>>;
 
-  const todayIst = getTodayIndiaDate();
-  if (editionDate === todayIst && published.length < 10) {
-    const existingIds = new Set(published.map((a) => String(a.id)));
-    const recentExtra = db
+  const seenIds = new Set<string>(published.map((a) => String(a.id || '')));
+  const seenUrls = new Set<string>(
+    published.map((a) => String(a.source_url || '').trim()).filter(Boolean),
+  );
+  const seenTitles = new Set<string>(
+    published.map((a) => String(a.title || '').trim().toLowerCase()).filter(Boolean),
+  );
+
+  const pushUnique = (row: Record<string, unknown>) => {
+    if (published.length >= TARGET_EDITION_STORIES) return false;
+    const rid = String(row.id || '');
+    const url = String(row.source_url || '').trim();
+    const normTitle = String(row.title || '').trim().toLowerCase();
+    if (!normTitle || seenIds.has(rid) || seenTitles.has(normTitle)) return false;
+    if (url && seenUrls.has(url)) return false;
+    seenIds.add(rid);
+    seenTitles.add(normTitle);
+    if (url) seenUrls.add(url);
+    published.push(row);
+    return true;
+  };
+
+  if (published.length < TARGET_EDITION_STORIES) {
+    const olderArticles = db
       .prepare(`
         SELECT a.id, a.title, a.slug, a.summary, a.content, a.image_url, a.image_rights, a.source_name, a.source_url, a.author, a.language, a.subtopic, a.views, a.published_at,
                a.state_id, a.city_id, c.name as category_name, c.slug as category_slug, s.name as state_name, ct.name as city_name, ct.slug as city_slug
@@ -63,17 +113,62 @@ export function generateEditionForDate(editionDate: string) {
         LEFT JOIN states s ON s.id = a.state_id
         LEFT JOIN cities ct ON ct.id = a.city_id
         WHERE a.status = 'published'
-          AND date(datetime(a.published_at, '+5 hours', '+30 minutes')) <= date(?)
-          AND datetime(a.published_at) >= datetime(?, '-2 days')
-        ORDER BY CASE WHEN a.source_url != '' THEN 0 ELSE 1 END, a.published_at DESC
-        LIMIT 40
+        ORDER BY CASE WHEN date(datetime(a.published_at, '+5 hours', '+30 minutes')) <= date(?) THEN 0 ELSE 1 END,
+                 CASE WHEN a.source_url != '' THEN 0 ELSE 1 END,
+                 a.published_at DESC
+        LIMIT 500
       `)
-      .all(todayIst, `${todayIst}T23:59:59+05:30`) as Array<Record<string, unknown>>;
-    for (const row of recentExtra) {
-      if (!existingIds.has(String(row.id)) && published.length < 40) {
-        published.push(row);
-        existingIds.add(String(row.id));
-      }
+      .all(editionDate) as Array<Record<string, unknown>>;
+
+    for (const row of olderArticles) {
+      if (published.length >= TARGET_EDITION_STORIES) break;
+      pushUnique(row);
+    }
+  }
+
+  if (published.length < TARGET_EDITION_STORIES) {
+    const wireRows = db
+      .prepare(`
+        SELECT id, scope_type, scope_slug, scope_label, beat, title, summary, detailed_body,
+               image_url, image_rights, source_name, source_url, author, language, published_at
+        FROM wire_dispatches
+        WHERE language = 'en'
+        ORDER BY CASE WHEN scope_slug = 'india' THEN 0 WHEN scope_type IN ('state', 'city') THEN 1 ELSE 2 END,
+                 CASE WHEN date(datetime(published_at, '+5 hours', '+30 minutes')) <= date(?) THEN 0 ELSE 1 END,
+                 published_at DESC
+        LIMIT 1200
+      `)
+      .all(editionDate) as Array<Record<string, unknown>>;
+
+    for (const w of wireRows) {
+      if (published.length >= TARGET_EDITION_STORIES) break;
+      const scopeType = String(w.scope_type || 'country');
+      const scopeSlug = String(w.scope_slug || '');
+      const beat = String(w.beat || 'top');
+      const mapped = mapWireBeatToCategory(scopeType, scopeSlug, beat);
+      pushUnique({
+        id: String(w.id),
+        title: String(w.title || ''),
+        slug: '',
+        summary: String(w.summary || w.title || ''),
+        content: String(w.detailed_body || w.summary || w.title || ''),
+        image_url: String(w.image_url || ''),
+        image_rights: String(w.image_rights || ''),
+        source_name: String(w.source_name || 'Maheep Wire'),
+        source_url: String(w.source_url || ''),
+        author: String(w.author || w.source_name || 'Wire Desk'),
+        language: String(w.language || 'en'),
+        subtopic: String(w.scope_label || ''),
+        views: 0,
+        published_at: String(w.published_at || `${editionDate}T08:00:00+05:30`),
+        state_id: scopeType === 'state' ? scopeSlug : null,
+        city_id: scopeType === 'city' ? scopeSlug : null,
+        category_name: mapped.category_name,
+        category_slug: mapped.category_slug,
+        state_name: scopeType === 'state' ? String(w.scope_label || '').split('·')[0].trim() : undefined,
+        city_name: scopeType === 'city' ? String(w.scope_label || '').split('·')[0].trim() : undefined,
+        city_slug: scopeType === 'city' ? scopeSlug : undefined,
+      });
     }
   }
 
@@ -84,7 +179,7 @@ export function generateEditionForDate(editionDate: string) {
   }
 
   const id = `ed-${editionDate}`;
-  const pages = buildEditionPagesPayload(editionDate, published);
+  const pages = buildEditionPagesPayload(editionDate, published, 'all');
   const coverImage = String(
     published.find((a) => Boolean(a.image_url))?.image_url ||
       '/src/assets/images/hero_parliament_india_1795494842593.jpg',
@@ -104,6 +199,151 @@ export function generateEditionForDate(editionDate: string) {
   `).run(id, editionDate, title, `/api/editions/${id}/html`, coverImage, pages.length, published.length, JSON.stringify({ pages }));
 
   return db.prepare('SELECT * FROM editions WHERE edition_date = ?').get(editionDate);
+}
+
+export function ensureAllEditionsDetailed25Pages(): void {
+  const alreadyDone = getSetting('edition_25pages_v1', '') === 'done';
+  const underSized = db
+    .prepare("SELECT COUNT(*) as c FROM editions WHERE status = 'published' AND page_count < 24")
+    .get() as { c: number };
+
+  if (alreadyDone && underSized.c === 0) return;
+
+  const existingDates = db
+    .prepare('SELECT edition_date FROM editions ORDER BY edition_date DESC')
+    .all() as Array<{ edition_date: string }>;
+
+  const dateSet = new Set<string>(existingDates.map((r) => r.edition_date));
+  dateSet.add(getTodayIndiaDate());
+
+  for (const dateStr of dateSet) {
+    try {
+      generateEditionForDate(dateStr);
+    } catch {
+      // Skip if date has zero publishable records
+    }
+  }
+
+  setSetting('edition_25pages_v1', 'done');
+}
+
+export async function buildLocalizedEditionRow<
+  T extends {
+    id: string;
+    edition_date: string;
+    title: string;
+    pdf_url: string;
+    cover_image: string;
+    page_count: number;
+    article_count: number;
+    status: string;
+    content_json: string;
+    created_at: string;
+  },
+>(
+  edition: T,
+  lang: 'all' | 'en' | 'hi',
+  opts?: { activePage?: number; translateAll?: boolean; skipLive?: boolean },
+): Promise<T> {
+  if (lang === 'all') return edition;
+
+  let pages: EditionPageData[] = [];
+  try {
+    const parsed = JSON.parse(edition.content_json || '{}') as { pages?: EditionPageData[] };
+    pages = Array.isArray(parsed.pages) ? parsed.pages : [];
+  } catch {
+    return edition;
+  }
+
+  if (pages.length === 0) return edition;
+
+  // Preserve the EXACT same stories, images, and page layout; only localize headings & stories in place
+  let localizedPages = localizeEditionPageHeaders(pages, edition.edition_date, lang).map((p) => ({
+    ...p,
+    articles: applyCachedTranslationsSync(
+      (p.articles || []) as unknown as TranslatableNewsItem[],
+      lang,
+    ) as unknown as EditionArticleData[],
+  }));
+
+  if (!opts?.skipLive) {
+    if (opts?.translateAll) {
+      // Translate up to first 4 pages live (plus any SQLite-cached pages across all 25 pages) for printable HTML
+      const pagesToTranslate = Math.min(localizedPages.length, 4);
+      for (let i = 0; i < pagesToTranslate; i++) {
+        localizedPages[i] = {
+          ...localizedPages[i],
+          articles: (await translateNewsItems(
+            localizedPages[i].articles as unknown as TranslatableNewsItem[],
+            lang,
+            { translateBody: false, maxLive: 15 },
+          )) as unknown as EditionArticleData[],
+        };
+      }
+    } else {
+      const targetIdx = Math.min(
+        Math.max(0, (opts?.activePage || 1) - 1),
+        localizedPages.length - 1,
+      );
+      localizedPages[targetIdx] = {
+        ...localizedPages[targetIdx],
+        articles: (await translateNewsItems(
+          localizedPages[targetIdx].articles as unknown as TranslatableNewsItem[],
+          lang,
+          { translateBody: false, maxLive: 15 },
+        )) as unknown as EditionArticleData[],
+      };
+    }
+  }
+
+  const localizedTitle =
+    lang === 'hi'
+      ? `महीप दैनिक ई-पेपर (हिंदी संस्करण) — ${edition.edition_date}`
+      : `Maheep Digital Broadsheet (English Edition) — ${edition.edition_date}`;
+
+  return {
+    ...edition,
+    title: localizedTitle,
+    page_count: localizedPages.length,
+    content_json: JSON.stringify({ pages: localizedPages }),
+  };
+}
+
+export async function translateSingleEditionPage(
+  edition: {
+    id: string;
+    edition_date: string;
+    content_json: string;
+  },
+  pageNumber: number,
+  lang: 'all' | 'en' | 'hi',
+): Promise<EditionPageData | null> {
+  let pages: EditionPageData[] = [];
+  try {
+    const parsed = JSON.parse(edition.content_json || '{}') as { pages?: EditionPageData[] };
+    pages = Array.isArray(parsed.pages) ? parsed.pages : [];
+  } catch {
+    return null;
+  }
+  if (pages.length === 0) return null;
+
+  const localizedHeaders = localizeEditionPageHeaders(pages, edition.edition_date, lang);
+  const idx = Math.min(Math.max(0, pageNumber - 1), localizedHeaders.length - 1);
+  const targetPage = localizedHeaders[idx];
+  if (!targetPage) return null;
+
+  if (lang === 'all') return targetPage;
+
+  const translatedArticles = (await translateNewsItems(
+    (targetPage.articles || []) as unknown as TranslatableNewsItem[],
+    lang,
+    { translateBody: false, maxLive: 15 },
+  )) as unknown as EditionArticleData[];
+
+  return {
+    ...targetPage,
+    articles: translatedArticles,
+  };
 }
 
 interface EditionArticleData {
@@ -293,8 +533,10 @@ export function renderEditionPrintableHtml(edition: {
     })
     .join('');
 
+  const isHindiHtml = /[\u0900-\u097F]/.test(edition.title);
+
   return `<!doctype html>
-<html lang="en">
+<html lang="${isHindiHtml ? 'hi' : 'en'}">
 <head>
   <meta charset="UTF-8" />
   <title>${escapeHtml(edition.title)}</title>

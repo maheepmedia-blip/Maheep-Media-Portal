@@ -4,11 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { recordSystemError } from './server/audit.ts';
 import { initDatabase } from './server/db.ts';
+import { ensureAllEditionsDetailed25Pages } from './server/epaper.ts';
 import { startUnifiedScheduler } from './server/jobs.ts';
 import { registerApiRoutes } from './server/routes.ts';
 
 async function startServer() {
   initDatabase();
+  ensureAllEditionsDetailed25Pages();
   startUnifiedScheduler();
 
   const app = express();
@@ -52,6 +54,7 @@ async function startServer() {
   } else {
     app.use(express.static(distDir));
     app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }

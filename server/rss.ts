@@ -333,7 +333,7 @@ export function createSlug(title: string): string {
   return `${base || 'dispatch'}-${crypto.randomBytes(3).toString('hex')}`;
 }
 
-function stripHtml(raw: string): string {
+export function stripHtml(raw: string): string {
   return raw
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
@@ -344,7 +344,7 @@ function stripHtml(raw: string): string {
     .trim();
 }
 
-function stripHtmlPreserveParagraphs(raw: string): string {
+export function stripHtmlPreserveParagraphs(raw: string): string {
   return raw
     .replace(/<\/(p|div|li|h[1-6]|blockquote)>/gi, '\n\n')
     .replace(/<br\s*\/?>/gi, '\n')
@@ -517,14 +517,18 @@ interface ParsedFeedItem {
   sourceName: string;
 }
 
-export async function fetchAndParseFeed(feedUrl: string, defaultSourceName: string): Promise<ParsedFeedItem[]> {
+export async function fetchAndParseFeed(
+  feedUrl: string,
+  defaultSourceName: string,
+  maxItems = 20,
+): Promise<ParsedFeedItem[]> {
   const validated = validateExternalFeedUrl(feedUrl);
   const res = await fetch(validated.toString(), {
     headers: {
       'User-Agent': 'MaheepNewsPortal/1.0 (+https://maheepnews.in)',
       Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml',
     },
-    signal: AbortSignal.timeout(12_000),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     throw new Error(`Feed returned HTTP ${res.status}`);
@@ -538,7 +542,7 @@ export async function fetchAndParseFeed(feedUrl: string, defaultSourceName: stri
   const list = Array.isArray(rawList) ? rawList : [rawList];
 
   const results: ParsedFeedItem[] = [];
-  for (const item of list.slice(0, 20)) {
+  for (const item of list.slice(0, Math.min(120, Math.max(1, maxItems)))) {
     if (!item || typeof item !== 'object') continue;
     const rawTitle = typeof item.title === 'object' ? item.title['#text'] : item.title;
     const title = stripHtml(String(rawTitle || ''));

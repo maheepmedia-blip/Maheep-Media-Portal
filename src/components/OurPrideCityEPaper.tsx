@@ -361,7 +361,13 @@ export function OurPrideCityEPaper({
           {isLead && art.image_url && (
             <figure className="md:col-span-5 space-y-1">
               <div className="aspect-[4/3] rounded overflow-hidden bg-neutral-100">
-                <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
+                <ArticleImage
+                  src={art.image_url}
+                  alt={art.title}
+                  category={art.category_name}
+                  sourceName={art.source_name}
+                  imageRights={art.image_rights}
+                />
               </div>
               {art.image_rights && <figcaption className="text-[10px] opacity-65 italic">{art.image_rights}</figcaption>}
             </figure>
@@ -385,7 +391,13 @@ export function OurPrideCityEPaper({
             {!isLead && idx <= 2 && art.image_url && (
               <figure className="space-y-1 my-2">
                 <div className="aspect-[16/9] rounded overflow-hidden bg-neutral-100">
-                  <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
+                  <ArticleImage
+                    src={art.image_url}
+                    alt={art.title}
+                    category={art.category_name}
+                    sourceName={art.source_name}
+                    imageRights={art.image_rights}
+                  />
                 </div>
                 {art.image_rights && (
                   <figcaption className="text-[10px] opacity-65 italic">{art.image_rights}</figcaption>

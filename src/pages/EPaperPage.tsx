@@ -9,6 +9,8 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Globe2,
+  Landmark,
   MapPin,
   Maximize2,
   Minimize2,
@@ -23,7 +25,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
 import { ArticleImage } from '../components/ArticleImage.tsx';
-import { OurPrideCityEPaper } from '../components/OurPrideCityEPaper.tsx';
+import { DetailedWireEPaper } from '../components/DetailedWireEPaper.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
 import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
@@ -36,6 +38,14 @@ import { speakNewspaperText, stopNewspaperSpeech } from '../utils/speech.ts';
 type PaperTheme = 'light' | 'sepia' | 'dark';
 type ReaderViewMode = 'broadsheet' | 'article';
 type TextScale = 'compact' | 'standard' | 'large';
+type PaperSection = 'broadsheet' | 'beacon' | 'our-pride' | 'worldwire';
+
+function parseSectionParam(sec: string | null): PaperSection {
+  if (sec === 'beacon' || sec === 'our-pride' || sec === 'worldwire' || sec === 'broadsheet') {
+    return sec;
+  }
+  return 'broadsheet';
+}
 
 interface ArchiveHit {
   edition_date: string;
@@ -169,17 +179,23 @@ function BroadsheetSponsorBox({
 
 export function EPaperPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { language, readerToken, readerUser, setReaderDrawerOpen, selectedLocalCity } = usePortal();
+  const { language, setLanguage, readerToken, readerUser, setReaderDrawerOpen, selectedLocalCity } = usePortal();
+  const isHi = language === 'hi';
 
-  const initialSection = searchParams.get('section') === 'our-pride' ? 'our-pride' : 'broadsheet';
-  const [paperSection, setPaperSection] = useState<'broadsheet' | 'our-pride'>(initialSection);
+  const initialSection = parseSectionParam(searchParams.get('section'));
+  const [paperSection, setPaperSection] = useState<PaperSection>(initialSection);
 
   const [editions, setEditions] = useState<Edition[]>([]);
   const [selectedEdition, setSelectedEdition] = useState<Edition | null>(null);
   const [currentPageIdx, setCurrentPageIdx] = useState(0);
   const [monthFilter, setMonthFilter] = useState('');
   const [loading, setLoading] = useState(true);
+  const [translatingPage, setTranslatingPage] = useState(false);
   const [activeAds, setActiveAds] = useState<Advertisement[]>([]);
+
+  const selectedDateRef = useRef<string>('');
+  const currentPageIdxRef = useRef<number>(0);
+  const translatedPageTokensRef = useRef<Set<string>>(new Set());
 
   // Smart Reader Controls
   const [zoom, setZoom] = useState<number>(100);
@@ -199,10 +215,8 @@ export function EPaperPage() {
 
   useEffect(() => {
     const sec = searchParams.get('section');
-    if (sec === 'our-pride') {
-      setPaperSection('our-pride');
-    } else if (sec === 'broadsheet') {
-      setPaperSection('broadsheet');
+    if (sec === 'beacon' || sec === 'our-pride' || sec === 'worldwire' || sec === 'broadsheet') {
+      setPaperSection(sec);
     }
   }, [searchParams]);
 
@@ -225,26 +239,63 @@ export function EPaperPage() {
   }, [language]);
 
   useEffect(() => {
+    selectedDateRef.current = selectedEdition?.edition_date || searchParams.get('date') || '';
+  }, [selectedEdition?.edition_date, searchParams]);
+
+  useEffect(() => {
+    currentPageIdxRef.current = currentPageIdx;
+  }, [currentPageIdx]);
+
+  useEffect(() => {
+    let active = true;
     setLoading(true);
-    const qs = monthFilter ? `?month=${encodeURIComponent(monthFilter)}` : '';
-    fetch(`/api/editions${qs}`, { cache: 'no-store' })
+    const params = new URLSearchParams();
+    if (monthFilter) params.set('month', monthFilter);
+    params.set('lang', language);
+    const activeDateParam = selectedDateRef.current || searchParams.get('date') || '';
+    if (activeDateParam) params.set('date', activeDateParam);
+    params.set('page', String(currentPageIdxRef.current + 1));
+
+    fetch(`/api/editions?${params.toString()}`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((json) => {
+        if (!active) return;
         const list = (json.editions || []) as Edition[];
         setEditions(list);
         if (list.length > 0) {
-          const initialDate = searchParams.get('date') || '';
-          const initialPage = Math.max(0, Number(searchParams.get('page') || '1') - 1);
-          const matched = initialDate ? list.find((e) => e.edition_date === initialDate) : undefined;
-          setSelectedEdition(matched || list[0]);
-          setCurrentPageIdx(initialPage);
+          setSelectedEdition((prevEdition) => {
+            const preferredDate = prevEdition?.edition_date || searchParams.get('date') || '';
+            const matched = preferredDate ? list.find((e) => e.edition_date === preferredDate) : undefined;
+            const nextEd = matched || list[0];
+            if (!prevEdition) {
+              const initialPage = Math.max(0, Number(searchParams.get('page') || '1') - 1);
+              setCurrentPageIdx(initialPage);
+            } else {
+              setCurrentPageIdx((prevIdx) => {
+                try {
+                  const parsed = JSON.parse(nextEd.content_json || '{}');
+                  const len = Array.isArray(parsed.pages) ? parsed.pages.length : 1;
+                  return Math.min(prevIdx, Math.max(0, len - 1));
+                } catch {
+                  return 0;
+                }
+              });
+            }
+            return nextEd;
+          });
         } else {
           setSelectedEdition(null);
         }
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [monthFilter]);
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [monthFilter, language]);
 
   const pages: EditionPage[] = useMemo(() => {
     if (!selectedEdition) return [];
@@ -258,6 +309,67 @@ export function EPaperPage() {
 
   const activePage = pages[currentPageIdx] || pages[0];
   const broadsheetAd = activeAds.length > 0 ? activeAds[currentPageIdx % activeAds.length] : null;
+
+  // Lazily translate the active page if user flips to another page or selects another date in Hindi/English
+  useEffect(() => {
+    if (paperSection !== 'broadsheet') return;
+    if (language !== 'hi' && language !== 'en') {
+      setTranslatingPage(false);
+      return;
+    }
+    if (!selectedEdition || !activePage) return;
+
+    const token = `${selectedEdition.id}:${activePage.pageNumber}:${language}`;
+    if (translatedPageTokensRef.current.has(token)) return;
+
+    const hasDev = (s?: string) => /[\u0900-\u097F]/.test(String(s || ''));
+    const needsLive = activePage.articles.some((a) =>
+      language === 'hi'
+        ? !hasDev(a.title) || (String(a.summary || '').trim().length > 20 && !hasDev(a.summary))
+        : hasDev(a.title) || hasDev(a.summary),
+    );
+
+    if (!needsLive) {
+      translatedPageTokensRef.current.add(token);
+      return;
+    }
+
+    let cancelled = false;
+    setTranslatingPage(true);
+    fetch(
+      `/api/editions/${encodeURIComponent(selectedEdition.id)}/page/${activePage.pageNumber}?lang=${encodeURIComponent(language)}`,
+      { cache: 'no-store' },
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (cancelled || !json?.page) return;
+        translatedPageTokensRef.current.add(token);
+        const updatedPage = json.page as EditionPage;
+        const patchEdition = (ed: Edition): Edition => {
+          if (ed.id !== selectedEdition.id) return ed;
+          try {
+            const parsed = JSON.parse(ed.content_json || '{}');
+            const currPages: EditionPage[] = Array.isArray(parsed.pages) ? parsed.pages : [];
+            const nextPages = currPages.map((p) =>
+              p.pageNumber === updatedPage.pageNumber ? updatedPage : p,
+            );
+            return { ...ed, content_json: JSON.stringify({ pages: nextPages }) };
+          } catch {
+            return ed;
+          }
+        };
+        setSelectedEdition((prev) => (prev ? patchEdition(prev) : prev));
+        setEditions((prevList) => prevList.map(patchEdition));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setTranslatingPage(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [paperSection, selectedEdition?.id, currentPageIdx, language]);
 
   // Track reader continue-from-last-page progress
   useEffect(() => {
@@ -358,9 +470,10 @@ export function EPaperPage() {
     }
     const pageTranscript = activePage.articles
       .slice(0, 6)
-      .map((art, i) => `Story ${i + 1}. ${art.title}. ${art.summary || ''}`)
+      .map((art, i) => `${isHi ? 'समाचार' : 'Story'} ${i + 1}. ${art.title}. ${art.summary || ''}`)
       .join(' ');
     speakNewspaperText(`${activePage.sectionTitle}. ${pageTranscript}`, {
+      lang: isHi ? 'hi' : 'en',
       onStart: () => setSpeakingTarget('page'),
       onEnd: () => setSpeakingTarget((curr) => (curr === 'page' ? null : curr)),
     });
@@ -373,6 +486,7 @@ export function EPaperPage() {
       return;
     }
     speakNewspaperText(`${title}. ${summary || ''}`, {
+      lang: isHi ? 'hi' : 'en',
       onStart: () => setSpeakingTarget(key),
       onEnd: () => setSpeakingTarget((curr) => (curr === key ? null : curr)),
     });
@@ -441,75 +555,104 @@ export function EPaperPage() {
           <div className="pb-6 border-b border-neutral-200 dark:border-neutral-800 flex flex-col lg:flex-row lg:items-end justify-between gap-4 no-print">
             <div>
               <p className="text-xs font-semibold text-[#00652E] dark:text-[#4ade80]">
-                ई-पेपर स्मार्ट रीडर · Detailed Digital Broadsheet
+                {isHi
+                  ? 'ई-पेपर स्मार्ट रीडर · संपूर्ण हिंदी डिजिटल समाचार पत्र'
+                  : 'ई-पेपर स्मार्ट रीडर · Detailed Digital Broadsheet'}
               </p>
               <h1 className="font-editorial text-3xl sm:text-4xl font-bold text-neutral-950 dark:text-white mt-1">
-                Maheep Daily E-Paper &amp; Archive
+                {isHi ? 'महीप दैनिक ई-पेपर एवं आर्काइव' : 'Maheep Daily E-Paper & Archive'}
               </h1>
               <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-                Full multi-column newspaper editions with complete stories, source attribution, Article Mode, and PDF export.
+                {isHi
+                  ? 'पूर्ण बहु-स्तंभ हिंदी व अंग्रेज़ी समाचार पत्र, स्रोत विवरण, आर्टिकल मोड और प्रिंट/पीडीएफ सुविधा के साथ।'
+                  : 'Full multi-column newspaper editions with complete stories, source attribution, Article Mode, and PDF export.'}
               </p>
             </div>
 
-            {paperSection === 'broadsheet' && (
-              <div className="flex flex-wrap items-center gap-2.5">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300">
-                  <Calendar className="w-4 h-4 text-[#00652E]" />
-                  <input
-                    type="month"
-                    value={monthFilter}
-                    onChange={(e) => setMonthFilter(e.target.value)}
-                    className="px-2.5 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs"
-                  />
-                </label>
-
-                {editions.length > 0 && (
-                  <select
-                    value={selectedEdition?.edition_date || ''}
-                    onChange={(e) => handleDateChange(e.target.value)}
-                    aria-label="Select edition date"
-                    className="px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-mono-tabular"
+            <div className="flex flex-wrap items-center gap-2.5">
+              {/* Inline Newspaper Language Switcher */}
+              <div
+                className="inline-flex rounded border border-neutral-300 dark:border-neutral-700 overflow-hidden bg-white dark:bg-neutral-900 text-xs"
+                role="group"
+                aria-label="Newspaper Language"
+              >
+                {(['all', 'en', 'hi'] as const).map((langOpt) => (
+                  <button
+                    key={langOpt}
+                    type="button"
+                    onClick={() => setLanguage(langOpt)}
+                    className={`px-2.5 py-1.5 font-semibold whitespace-nowrap transition-colors ${
+                      language === langOpt
+                        ? 'bg-[#00652E] text-white'
+                        : 'text-neutral-700 dark:text-neutral-300 hover:bg-[#EAF5E5] dark:hover:bg-neutral-800'
+                    }`}
                   >
-                    {editions.map((ed) => (
-                      <option key={ed.id} value={ed.edition_date}>
-                        {ed.edition_date} — {ed.page_count} Pages · {ed.article_count} Reports
-                      </option>
-                    ))}
-                  </select>
-                )}
-
-                {selectedEdition && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => downloadEditionPdf(selectedEdition, activeAds)}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold transition-colors whitespace-nowrap"
-                    >
-                      <Download className="w-3.5 h-3.5" /> PDF
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => window.print()}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E] whitespace-nowrap"
-                    >
-                      <Printer className="w-3.5 h-3.5" /> Print
-                    </button>
-                    <a
-                      href={`/api/editions/${selectedEdition.id}/html`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E] whitespace-nowrap"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" /> Full HTML
-                    </a>
-                  </>
-                )}
+                    {langOpt === 'all' ? 'All' : langOpt === 'en' ? 'English' : 'हिन्दी'}
+                  </button>
+                ))}
               </div>
-            )}
+
+              {paperSection === 'broadsheet' && (
+                <>
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                    <Calendar className="w-4 h-4 text-[#00652E]" />
+                    <input
+                      type="month"
+                      value={monthFilter}
+                      onChange={(e) => setMonthFilter(e.target.value)}
+                      className="px-2.5 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs"
+                    />
+                  </label>
+
+                  {editions.length > 0 && (
+                    <select
+                      value={selectedEdition?.edition_date || ''}
+                      onChange={(e) => handleDateChange(e.target.value)}
+                      aria-label="Select edition date"
+                      className="px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-mono-tabular"
+                    >
+                      {editions.map((ed) => (
+                        <option key={ed.id} value={ed.edition_date}>
+                          {ed.edition_date} — {ed.page_count} {isHi ? 'पृष्ठ' : 'Pages'} · {ed.article_count}{' '}
+                          {isHi ? 'समाचार' : 'Reports'}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {selectedEdition && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => downloadEditionPdf(selectedEdition, activeAds)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold transition-colors whitespace-nowrap"
+                      >
+                        <Download className="w-3.5 h-3.5" /> PDF
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => window.print()}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E] whitespace-nowrap"
+                      >
+                        <Printer className="w-3.5 h-3.5" /> {isHi ? 'प्रिंट' : 'Print'}
+                      </button>
+                      <a
+                        href={`/api/editions/${selectedEdition.id}/html?lang=${encodeURIComponent(language)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E] whitespace-nowrap"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" /> Full HTML
+                      </a>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         )}
 
-        {/* E-Newspaper Edition Mode Switcher: Full Broadsheet vs Our Pride Every-City */}
+        {/* E-Newspaper Edition Mode Switcher: Full Broadsheet vs Beacon / Our Pride / WorldWire 300 */}
         {!fullscreen && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 dark:border-neutral-800 pb-4 no-print">
             <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="E-Newspaper Edition Section">
@@ -531,7 +674,24 @@ export function EPaperPage() {
                 }`}
               >
                 <BookOpen className="w-4 h-4" />
-                Full Broadsheet Edition
+                {isHi ? 'पूर्ण ब्रॉडशीट संस्करण' : 'Full Broadsheet Edition'}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={paperSection === 'beacon'}
+                onClick={() => {
+                  setPaperSection('beacon');
+                  setSearchParams({ section: 'beacon', scopeType: 'country', slug: 'india' }, { replace: true });
+                }}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+                  paperSection === 'beacon'
+                    ? 'bg-[#00652E] text-white'
+                    : 'bg-[#EAF5E5]/70 dark:bg-[#00451F]/30 text-[#00652E] dark:text-[#4ade80] border border-[#00652E]/30 hover:bg-[#00652E] hover:text-white'
+                }`}
+              >
+                <Landmark className="w-4 h-4" />
+                {isHi ? 'द बीकन · भारत एवं 36 राज्य (300 समाचार)' : 'The Beacon · India & 36 States (300/State)'}
               </button>
               <button
                 type="button"
@@ -540,10 +700,7 @@ export function EPaperPage() {
                 onClick={() => {
                   setPaperSection('our-pride');
                   const city = searchParams.get('city') || selectedLocalCity || 'mumbai';
-                  const dt = searchParams.get('date') || selectedEdition?.edition_date || '';
-                  const nextParams: Record<string, string> = { section: 'our-pride', city };
-                  if (dt) nextParams.date = dt;
-                  setSearchParams(nextParams, { replace: true });
+                  setSearchParams({ section: 'our-pride', scopeType: 'city', slug: city, city }, { replace: true });
                 }}
                 className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
                   paperSection === 'our-pride'
@@ -552,19 +709,49 @@ export function EPaperPage() {
                 }`}
               >
                 <MapPin className="w-4 h-4" />
-                Our Pride · Every City Local News
+                {isHi ? 'अवर प्राइड · 339 शहर (300/शहर)' : 'Our Pride · 339 Cities (300/City)'}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={paperSection === 'worldwire'}
+                onClick={() => {
+                  setPaperSection('worldwire');
+                  setSearchParams({ section: 'worldwire', scopeType: 'country', slug: 'united-states' }, { replace: true });
+                }}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+                  paperSection === 'worldwire'
+                    ? 'bg-[#00652E] text-white'
+                    : 'bg-[#EAF5E5]/70 dark:bg-[#00451F]/30 text-[#00652E] dark:text-[#4ade80] border border-[#00652E]/30 hover:bg-[#00652E] hover:text-white'
+                }`}
+              >
+                <Globe2 className="w-4 h-4" />
+                {isHi ? 'वर्ल्डवायर · 50 देश (300/देश)' : 'WorldWire · 50 Countries (300/Country)'}
               </button>
             </div>
             <span className="text-xs text-neutral-500 dark:text-neutral-400">
-              {paperSection === 'our-pride'
-                ? 'Daily local news for every Indian Census city & state'
-                : 'Complete multi-page national, international, Our Pride, business & sports broadsheet'}
+              {isHi
+                ? paperSection === 'our-pride'
+                  ? '339 भारतीय शहरों के लिए प्रत्येक शहर के 300 विस्तृत स्थानीय समाचार'
+                  : paperSection === 'beacon'
+                    ? 'भारत एवं सभी 36 राज्यों/केंद्र शासित प्रदेशों के 300 विस्तृत समाचार'
+                    : paperSection === 'worldwire'
+                      ? 'विश्व के 50 देशों के लिए प्रत्येक देश के 300 अंतरराष्ट्रीय समाचार'
+                      : 'राष्ट्रीय, अंतरराष्ट्रीय, शहर/राज्य, व्यापार एवं खेल का संपूर्ण हिंदी संस्करण'
+                : paperSection === 'our-pride'
+                  ? '300 detailed local reports per city across 339 Indian cities'
+                  : paperSection === 'beacon'
+                    ? '300 detailed national & state reports across India & 36 States/UTs'
+                    : paperSection === 'worldwire'
+                      ? '300 detailed international reports per country across 50 world nations'
+                      : 'Complete multi-page national, international, Our Pride, business & sports broadsheet'}
             </span>
           </div>
         )}
 
-        {paperSection === 'our-pride' ? (
-          <OurPrideCityEPaper
+        {paperSection !== 'broadsheet' ? (
+          <DetailedWireEPaper
+            deskMode={paperSection}
             paperTheme={paperTheme}
             setPaperTheme={setPaperTheme}
             viewMode={viewMode}
@@ -573,10 +760,32 @@ export function EPaperPage() {
             setZoom={setZoom}
             fullscreen={fullscreen}
             setFullscreen={setFullscreen}
-            initialCitySlug={searchParams.get('city') || selectedLocalCity || 'mumbai'}
-            initialDate={searchParams.get('date') || selectedEdition?.edition_date || ''}
-            onSyncParams={(citySlug, dt) => {
-              setSearchParams({ section: 'our-pride', city: citySlug, date: dt }, { replace: true });
+            initialScopeType={
+              paperSection === 'our-pride'
+                ? 'city'
+                : paperSection === 'worldwire'
+                  ? 'country'
+                  : searchParams.get('scopeType') === 'state'
+                    ? 'state'
+                    : 'country'
+            }
+            initialSlug={
+              paperSection === 'our-pride'
+                ? searchParams.get('city') || searchParams.get('slug') || selectedLocalCity || 'mumbai'
+                : paperSection === 'worldwire'
+                  ? searchParams.get('slug') && searchParams.get('slug') !== 'india'
+                    ? searchParams.get('slug') || 'united-states'
+                    : 'united-states'
+                  : searchParams.get('slug') || (searchParams.get('scopeType') === 'state' ? 'maharashtra' : 'india')
+            }
+            onSyncParams={(nextScopeType, nextSlug) => {
+              const qp: Record<string, string> = {
+                section: paperSection,
+                scopeType: nextScopeType,
+                slug: nextSlug,
+              };
+              if (nextScopeType === 'city') qp.city = nextSlug;
+              setSearchParams(qp, { replace: true });
             }}
             broadsheetAd={broadsheetAd}
           />
@@ -672,7 +881,9 @@ export function EPaperPage() {
         {!fullscreen && <AdSlot placement="epaper_banner" />}
 
         {loading ? (
-          <div className="py-12 text-sm text-neutral-500">Loading digital editions...</div>
+          <div className="py-12 text-sm text-neutral-500">
+            {isHi ? 'हिंदी ई-पेपर संस्करण तैयार हो रहा है...' : 'Loading digital editions...'}
+          </div>
         ) : !selectedEdition || !activePage ? (
           <div className="p-10 border border-neutral-200 dark:border-neutral-800 rounded-lg text-center">
             <p className="text-base font-medium">No editions published for the selected archive filter.</p>
@@ -693,7 +904,7 @@ export function EPaperPage() {
               <aside className="lg:col-span-3 space-y-4 no-print">
                 <div className="border border-neutral-200 dark:border-neutral-800 rounded-lg p-4 bg-white dark:bg-neutral-900">
                   <h2 className="text-xs font-bold uppercase tracking-wider text-neutral-500 mb-3">
-                    Edition Pages ({pages.length})
+                    {isHi ? `संस्करण पृष्ठ (${pages.length})` : `Edition Pages (${pages.length})`}
                   </h2>
                   <div className="space-y-1.5">
                     {pages.map((p, idx) => (
@@ -712,20 +923,48 @@ export function EPaperPage() {
                       </button>
                     ))}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPaperSection('our-pride');
-                      setSearchParams(
-                        { section: 'our-pride', city: selectedLocalCity || 'mumbai', date: selectedEdition.edition_date },
-                        { replace: true },
-                      );
-                    }}
-                    className="mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#EAF5E5] dark:bg-[#00451F]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-[#00652E] hover:text-white transition-colors"
-                  >
-                    <MapPin className="w-3.5 h-3.5" />
-                    Browse Every City (Our Pride) →
-                  </button>
+                  <div className="mt-3 space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaperSection('beacon');
+                        setSearchParams({ section: 'beacon', scopeType: 'country', slug: 'india' }, { replace: true });
+                      }}
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#EAF5E5] dark:bg-[#00451F]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-[#00652E] hover:text-white transition-colors"
+                    >
+                      <Landmark className="w-3.5 h-3.5" />
+                      The Beacon · 300/State →
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const city = selectedLocalCity || 'mumbai';
+                        setPaperSection('our-pride');
+                        setSearchParams(
+                          { section: 'our-pride', scopeType: 'city', slug: city, city },
+                          { replace: true },
+                        );
+                      }}
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#EAF5E5] dark:bg-[#00451F]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-[#00652E] hover:text-white transition-colors"
+                    >
+                      <MapPin className="w-3.5 h-3.5" />
+                      Our Pride · 300/City →
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaperSection('worldwire');
+                        setSearchParams(
+                          { section: 'worldwire', scopeType: 'country', slug: 'united-states' },
+                          { replace: true },
+                        );
+                      }}
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#EAF5E5] dark:bg-[#00451F]/40 text-[#00652E] dark:text-[#4ade80] text-xs font-semibold hover:bg-[#00652E] hover:text-white transition-colors"
+                    >
+                      <Globe2 className="w-3.5 h-3.5" />
+                      WorldWire · 300/Country →
+                    </button>
+                  </div>
                 </div>
 
                 {/* Clickable Newspaper Index */}
@@ -795,6 +1034,11 @@ export function EPaperPage() {
                   <span className="text-xs font-mono-tabular font-semibold px-2">
                     Page {activePage.pageNumber} / {pages.length} · {selectedEdition.edition_date}
                   </span>
+                  {translatingPage && (
+                    <span className="text-[11px] font-semibold text-[#00652E] dark:text-[#4ade80]">
+                      {isHi ? 'पृष्ठ अनुवाद हो रहा है...' : 'Translating page...'}
+                    </span>
+                  )}
                   <button
                     type="button"
                     disabled={currentPageIdx >= pages.length - 1}
@@ -995,7 +1239,13 @@ export function EPaperPage() {
                           {art.image_url && (
                             <figure className="space-y-1">
                               <div className="aspect-[16/9] rounded overflow-hidden bg-neutral-100">
-                                <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
+                                <ArticleImage
+                                  src={art.image_url}
+                                  alt={art.title}
+                                  category={art.category_name}
+                                  sourceName={art.source_name}
+                                  imageRights={art.image_rights}
+                                />
                               </div>
                               {art.image_rights && (
                                 <figcaption className="text-[11px] opacity-65 italic">{art.image_rights}</figcaption>
@@ -1078,17 +1328,20 @@ export function EPaperPage() {
                       <div className="border-b border-current/20 pb-3.5 flex flex-col sm:flex-row sm:items-end justify-between gap-2">
                         <div>
                           <div className="font-editorial text-2xl sm:text-3xl font-extrabold text-[#00652E] dark:text-[#4ade80] tracking-tight">
-                            MAHEEP NEWS PORTAL
+                            {isHi ? 'महीप न्यूज़ पोर्टल · हिंदी संस्करण' : 'MAHEEP NEWS PORTAL'}
                           </div>
                           <p className="text-xs opacity-75">
-                            सच के साथ, जनता के विश्वास के साथ · News from India &amp; Beyond · Detailed Broadsheet Edition
+                            {isHi
+                              ? 'सच के साथ, जनता के विश्वास के साथ · भारत और विश्व के समाचार · विस्तृत ब्रॉडशीट संस्करण'
+                              : 'सच के साथ, जनता के विश्वास के साथ · News from India & Beyond · Detailed Broadsheet Edition'}
                           </p>
                         </div>
                         <div className="text-left sm:text-right text-xs font-mono-tabular opacity-85">
                           <div className="font-semibold">{activePage.sectionTitle}</div>
                           <div>
-                            Edition: {selectedEdition.edition_date} · Page {activePage.pageNumber} of {pages.length} ·{' '}
-                            {activePage.articles.length} Stories
+                            {isHi
+                              ? `संस्करण: ${selectedEdition.edition_date} · पृष्ठ ${activePage.pageNumber} / ${pages.length} · ${activePage.articles.length} समाचार`
+                              : `Edition: ${selectedEdition.edition_date} · Page ${activePage.pageNumber} of ${pages.length} · ${activePage.articles.length} Stories`}
                           </div>
                         </div>
                       </div>
@@ -1131,7 +1384,13 @@ export function EPaperPage() {
                               {isLead && art.image_url && (
                                 <figure className="md:col-span-5 space-y-1">
                                   <div className="aspect-[4/3] rounded overflow-hidden bg-neutral-100">
-                                    <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
+                                    <ArticleImage
+                                      src={art.image_url}
+                                      alt={art.title}
+                                      category={art.category_name}
+                                      sourceName={art.source_name}
+                                      imageRights={art.image_rights}
+                                    />
                                   </div>
                                   {art.image_rights && (
                                     <figcaption className="text-[10px] opacity-65 italic">{art.image_rights}</figcaption>
@@ -1167,7 +1426,13 @@ export function EPaperPage() {
                                 {!isLead && idx <= 2 && art.image_url && (
                                   <figure className="space-y-1 my-2">
                                     <div className="aspect-[16/9] rounded overflow-hidden bg-neutral-100">
-                                      <ArticleImage src={art.image_url} alt={art.title} category={art.category_name} />
+                                      <ArticleImage
+                                        src={art.image_url}
+                                        alt={art.title}
+                                        category={art.category_name}
+                                        sourceName={art.source_name}
+                                        imageRights={art.image_rights}
+                                      />
                                     </div>
                                     {art.image_rights && (
                                       <figcaption className="text-[10px] opacity-65 italic">

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { getReaderGoogleRedirectResult, signOutFirebaseReader } from '../firebase.ts';
 import type { AdminUser, CityItem, ReaderUser } from '../types/news.ts';
 
 export type LanguageFilter = 'all' | 'en' | 'hi';
@@ -179,6 +180,42 @@ export function PortalProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('readerAuth') === '1') {
+      setReaderDrawerOpen(true);
+      params.delete('readerAuth');
+      const nextSearch = params.toString();
+      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, '', nextUrl);
+    }
+
+    let active = true;
+    void getReaderGoogleRedirectResult()
+      .then(async (cred) => {
+        if (!active || !cred?.user) return;
+        const idToken = await cred.user.getIdToken();
+        const res = await fetch('/api/reader/google-auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken }),
+        });
+        const json = await res.json();
+        if (active && res.ok && json.token && json.user) {
+          setReaderToken(json.token);
+          setReaderUser(json.user);
+          if (json.user.preferred_language) setLanguage(json.user.preferred_language);
+          if (json.user.font_size) setFontSizeState(json.user.font_size);
+          setReaderDrawerOpen(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     const root = document.documentElement;
     if (darkMode) {
       root.classList.add('dark');
@@ -318,6 +355,7 @@ export function PortalProvider({ children }: { children: React.ReactNode }) {
   const logoutReader = () => {
     setReaderToken(null);
     setReaderUser(null);
+    void signOutFirebaseReader().catch(() => {});
   };
 
   return (

@@ -139,8 +139,9 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
     setSelectedEdition(edition);
     if (location.pathname !== '/' && location.pathname !== '/epaper') {
       navigate('/');
-    } else if (location.pathname === '/epaper' && edition === 'local') {
-      navigate('/epaper?section=our-pride');
+    } else if (location.pathname === '/epaper') {
+      const sec = edition === 'local' ? 'our-pride' : edition === 'international' ? 'worldwire' : 'beacon';
+      navigate(`/epaper?section=${sec}`);
     }
   };
 
@@ -499,7 +500,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-medium hover:border-[#00652E] transition-colors"
               >
                 <User className="w-3.5 h-3.5 text-[#00652E]" />
-                <span>{readerUser ? readerUser.name.split(' ')[0] : 'Reader Desk'}</span>
+                <span>{readerUser ? readerUser.name.split(' ')[0] : 'Sign In / Up'}</span>
               </button>
 
               <Link
