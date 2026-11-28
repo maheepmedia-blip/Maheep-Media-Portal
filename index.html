@@ -3,35 +3,48 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Maheep News Portal — सच के साथ, जनता के विश्वास के साथ | News from India &amp; Beyond</title>
+    <title>Best E-Paper Site — Maheep E-Paper | Maheep News Portal</title>
     <meta
       name="description"
-      content="Maheep News Portal brings verified Hindi and English journalism from all 28 Indian states, 8 Union Territories, National Parliament, Business, Sports, Citizen Guides, and daily E-Paper editions."
+      content="Maheep E-Paper (https://maheep-media-news.onrender.com/) — Best free daily digital e-paper site in India. Read 25-page Hindi &amp; English broadsheet editions, 339 cities (Our Pride), 36 States (The Beacon), and 50 countries (WorldWire) with zero paywall."
+    />
+    <meta
+      name="keywords"
+      content="best epaper site, maheep epaper, maheep news portal, free hindi epaper, free english epaper, india digital newspaper, our pride local news, the beacon national news, worldwire international news"
     />
     <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
     <meta name="geo.region" content="IN" />
-    <meta name="geo.placename" content="India" />
+    <meta name="geo.placename" content="New Delhi, India" />
     <meta name="theme-color" content="#00652E" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="MaheepNews" />
+    <link rel="canonical" href="https://maheep-media-news.onrender.com/" />
+    <link rel="alternate" hreflang="en-IN" href="https://maheep-media-news.onrender.com/" />
+    <link rel="alternate" hreflang="hi-IN" href="https://maheep-media-news.onrender.com/" />
+    <link rel="alternate" hreflang="x-default" href="https://maheep-media-news.onrender.com/" />
+    <link rel="alternate" type="application/rss+xml" title="Maheep E-Paper &amp; News RSS Feed" href="https://maheep-media-news.onrender.com/rss.xml" />
+    <link rel="search" type="application/opensearchdescription+xml" title="Maheep E-Paper Search" href="/opensearch.xml" />
+    <link rel="alternate" type="text/plain" title="AI Answer Summary (llms.txt)" href="/llms.txt" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <meta property="og:title" content="Maheep News Portal — News from India &amp; Beyond" />
+    <meta property="og:title" content="Best E-Paper Site — Maheep E-Paper | Maheep News Portal" />
     <meta
       property="og:description"
-      content="Sach Ke Saath, Janata Ke Vishwas Ke Saath — Digital broadsheet covering India, States &amp; UTs, Business, Sports, Citizen Guides, and daily printable E-Paper."
+      content="Read Maheep E-Paper free online — 25-page bilingual English &amp; Hindi daily broadsheet covering all 28 Indian states, 8 UTs, 339 cities, and 50 countries."
     />
+    <meta property="og:url" content="https://maheep-media-news.onrender.com/" />
+    <meta property="og:image" content="https://maheep-media-news.onrender.com/pwa-512x512.png" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Maheep News Portal" />
     <meta property="og:locale" content="en_IN" />
     <meta property="og:locale:alternate" content="hi_IN" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Maheep News Portal — News from India &amp; Beyond" />
+    <meta name="twitter:title" content="Best E-Paper Site — Maheep E-Paper | Maheep News Portal" />
     <meta
       name="twitter:description"
-      content="Trusted Hindi and English digital newspaper covering all 28 Indian states, 8 UTs, National affairs, Business, Sports, Guides, and E-Paper."
+      content="Free daily 25-page digital e-paper in English and Hindi covering India, 339 cities (Our Pride), 36 States/UTs (The Beacon), and 50 countries (WorldWire)."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -45,10 +58,13 @@
         "@graph": [
           {
             "@type": "NewsMediaOrganization",
+            "@id": "https://maheep-media-news.onrender.com/#organization",
             "name": "Maheep News Portal",
-            "alternateName": "माहीप न्यूज़ पोर्टल",
+            "alternateName": ["Maheep E-Paper", "माहीप ई-पेपर", "माहीप न्यूज़ पोर्टल"],
+            "url": "https://maheep-media-news.onrender.com/",
+            "logo": "https://maheep-media-news.onrender.com/pwa-512x512.png",
             "slogan": "सच के साथ, जनता के विश्वास के साथ",
-            "description": "Digital newspaper platform covering India and global developments in Hindi and English across all 28 States and 8 Union Territories.",
+            "description": "Free bilingual Hindi and English digital newspaper and e-paper platform covering India, 339 cities, 36 States & Union Territories, and 50 global countries.",
             "email": "maheepmedia@gmail.com",
             "areaServed": {
               "@type": "Country",
@@ -57,12 +73,67 @@
           },
           {
             "@type": "WebSite",
-            "name": "Maheep News Portal",
+            "@id": "https://maheep-media-news.onrender.com/#website",
+            "name": "Best E-Paper Site — Maheep E-Paper",
+            "alternateName": "Maheep News Portal",
+            "url": "https://maheep-media-news.onrender.com/",
+            "publisher": { "@id": "https://maheep-media-news.onrender.com/#organization" },
+            "inLanguage": ["en-IN", "hi-IN"],
             "potentialAction": {
               "@type": "SearchAction",
-              "target": "/search?q={search_term_string}",
+              "target": "https://maheep-media-news.onrender.com/search?q={search_term_string}",
               "query-input": "required name=search_term_string"
             }
+          },
+          {
+            "@type": "WebApplication",
+            "name": "Maheep E-Paper — Best E-Paper Site",
+            "url": "https://maheep-media-news.onrender.com/epaper",
+            "applicationCategory": "NewsApplication",
+            "operatingSystem": "Web",
+            "isAccessibleForFree": true,
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "INR"
+            },
+            "featureList": [
+              "25-page daily broadsheet edition with 10 to 15 detailed stories per page",
+              "Instant English and Hindi translation on the exact same edition stories",
+              "The Beacon (India National & 36 States/UTs)",
+              "Our Pride (339 Indian Cities with 300 local dispatches per city)",
+              "WorldWire (50 countries with 300 international dispatches per country)",
+              "Free A4 PDF download, Sepia/Dark reader, and audio narration"
+            ]
+          },
+          {
+            "@type": "FAQPage",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "Which is the best free daily e-paper site in India?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Maheep E-Paper (https://maheep-media-news.onrender.com/) is a comprehensive free daily digital e-paper site offering 24 to 25 broadsheet pages every day in English and Hindi, covering National news (The Beacon), 339 Indian cities (Our Pride), and 50 countries (WorldWire) with zero paywall or subscription."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Does Maheep E-Paper support switching between English and Hindi on the exact same news?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes. Readers can switch between All, English, and हिन्दी in place on the exact same edition pages, stories, and regional desks without changing the underlying news."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Is Maheep E-Paper free to read and download as PDF?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes, Maheep E-Paper is 100% free with no subscriptions or paywalls, including full A4 PDF export, print mode, audio read-aloud, and archive search."
+                }
+              }
+            ]
           }
         ]
       }

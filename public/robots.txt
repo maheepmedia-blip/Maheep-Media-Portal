@@ -1,5 +1,37 @@
 User-agent: *
 Allow: /
 Disallow: /admin
+Disallow: /api/
 
-Sitemap: /sitemap.xml
+User-agent: Googlebot
+Allow: /
+
+User-agent: Googlebot-News
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+Sitemap: https://maheep-media-news.onrender.com/sitemap.xml
+Sitemap: https://maheep-media-news.onrender.com/sitemap-news.xml
+Sitemap: https://maheep-media-news.onrender.com/sitemap-epaper.xml
+Host: https://maheep-media-news.onrender.com
+

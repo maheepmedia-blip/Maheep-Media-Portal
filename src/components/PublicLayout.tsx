@@ -1,12 +1,15 @@
-import { ArrowUp, BookOpen, Calendar, Compass, Home, MapPin, Menu, Moon, RotateCcw, Search, Sun, User, WifiOff, X } from 'lucide-react';
+import { ArrowUp, Bookmark, BookOpen, Calendar, Compass, Home, MapPin, Menu, Moon, RotateCcw, Search, Sun, User, WifiOff, X } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { type NewsEdition, getEditionMeta, usePortal } from '../context/PortalContext.tsx';
 import type { Article, CityItem } from '../types/news.ts';
 import { getIndiaClockParts } from '../utils/date.ts';
+import { getSavedArticles, getSavedEpaperPages, READER_LISTS_EVENT } from '../utils/readerLists.ts';
 import { captureUtmParams, trackGrowthEvent } from '../utils/utm.ts';
 import { CitySelector } from './CitySelector.tsx';
+import { CommandSearchModal } from './CommandSearchModal.tsx';
 import { ReaderDrawer } from './ReaderDrawer.tsx';
+import { SavedReadingDrawer } from './SavedReadingDrawer.tsx';
 import { WeatherWidget } from './WeatherWidget.tsx';
 
 interface PublicLayoutProps {
@@ -50,6 +53,26 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
   const location = useLocation();
   const [showBackTop, setShowBackTop] = useState(false);
   const [isOnline, setIsOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
+  const [cmdSearchOpen, setCmdSearchOpen] = useState(false);
+  const [savedDrawerOpen, setSavedDrawerOpen] = useState(false);
+  const [savedCount, setSavedCount] = useState(() => getSavedArticles().length + getSavedEpaperPages().length);
+
+  useEffect(() => {
+    const syncSaved = () => setSavedCount(getSavedArticles().length + getSavedEpaperPages().length);
+    window.addEventListener(READER_LISTS_EVENT, syncSaved);
+    return () => window.removeEventListener(READER_LISTS_EVENT, syncSaved);
+  }, []);
+
+  useEffect(() => {
+    const onGlobalKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCmdSearchOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onGlobalKey);
+    return () => window.removeEventListener('keydown', onGlobalKey);
+  }, []);
 
   useEffect(() => {
     const onOnline = () => setIsOnline(true);
@@ -217,6 +240,16 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
           </nav>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setCmdSearchOpen(true)}
+              aria-label="Open quick jump search"
+              className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-600 dark:text-neutral-300 hover:border-[#00652E] transition-colors whitespace-nowrap"
+            >
+              <Search className="w-3.5 h-3.5" />
+              <span>Quick Jump</span>
+              <kbd className="text-[10px] font-mono-tabular opacity-70 ml-0.5">Ctrl+K</kbd>
+            </button>
             <Link
               to="/epaper"
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-semibold bg-[#00652E] text-white hover:bg-[#00451F] transition-colors whitespace-nowrap shrink-0"
@@ -496,6 +529,16 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
 
               <button
                 type="button"
+                onClick={() => setSavedDrawerOpen(true)}
+                aria-label="Open free saved stories and history"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-medium hover:border-[#00652E] transition-colors"
+              >
+                <Bookmark className="w-3.5 h-3.5 text-[#00652E]" />
+                <span>Saved{savedCount > 0 ? ` (${savedCount})` : ''}</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setReaderDrawerOpen(true)}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs font-medium hover:border-[#00652E] transition-colors"
               >
@@ -593,33 +636,36 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
           </div>
 
           <div>
-            <h3 className="text-sm font-semibold text-white mb-3">Sections</h3>
+            <h3 className="text-sm font-semibold text-white mb-3">E-Paper &amp; Top Cities</h3>
             <ul className="space-y-2 text-sm text-neutral-200">
-              <li><Link to="/national" className="hover:text-white hover:underline">National News</Link></li>
-              <li><Link to="/states" className="hover:text-white hover:underline">States &amp; Union Territories</Link></li>
-              <li><Link to="/business-sports" className="hover:text-white hover:underline">Business &amp; Markets</Link></li>
-              <li><Link to="/guides" className="hover:text-white hover:underline">Citizen Guides &amp; Videos</Link></li>
-              <li><Link to="/epaper" className="hover:text-white hover:underline">Daily E-Paper &amp; PDF Archive</Link></li>
+              <li><Link to="/epaper" className="hover:text-white hover:underline">Best E-Paper Site · 25-Page Broadsheet</Link></li>
+              <li><Link to="/epaper?section=beacon" className="hover:text-white hover:underline">The Beacon · National &amp; 36 States</Link></li>
+              <li><Link to="/epaper?section=our-pride&city=delhi" className="hover:text-white hover:underline">Our Pride · New Delhi E-Paper</Link></li>
+              <li><Link to="/epaper?section=our-pride&city=mumbai" className="hover:text-white hover:underline">Our Pride · Mumbai E-Paper</Link></li>
+              <li><Link to="/epaper?section=our-pride&city=lucknow" className="hover:text-white hover:underline">Our Pride · Lucknow &amp; Patna</Link></li>
+              <li><Link to="/epaper?section=worldwire" className="hover:text-white hover:underline">WorldWire · 50 Countries</Link></li>
             </ul>
           </div>
 
           <div>
             <h3 className="text-sm font-semibold text-white mb-3">Editorial &amp; Portal</h3>
             <ul className="space-y-2 text-sm text-neutral-200">
+              <li><Link to="/national" className="hover:text-white hover:underline">National &amp; States</Link></li>
+              <li><Link to="/business-sports" className="hover:text-white hover:underline">Business &amp; Sports</Link></li>
+              <li><Link to="/guides" className="hover:text-white hover:underline">Citizen Guides &amp; Videos</Link></li>
               <li><Link to="/briefing" className="hover:text-white hover:underline">Ask MAHEEP AI &amp; Audio</Link></li>
               <li><Link to="/timelines" className="hover:text-white hover:underline">News Timelines &amp; Data</Link></li>
               <li><Link to="/authors" className="hover:text-white hover:underline">Journalists &amp; Desks</Link></li>
               <li><Link to="/search" className="hover:text-white hover:underline">Global News Search</Link></li>
-              <li><Link to="/contact" className="hover:text-white hover:underline">Contact &amp; Consultation</Link></li>
-              <li><Link to="/admin" className="hover:text-white hover:underline">Editorial Admin Dashboard</Link></li>
+              <li><Link to="/contact" className="hover:text-white hover:underline">Contact Desk</Link></li>
               <li className="text-xs text-neutral-300 pt-1">Desk Email: maheepmedia@gmail.com</li>
             </ul>
           </div>
 
           <div>
-            <h3 className="text-sm font-semibold text-white mb-3">Daily Briefing Newsletter</h3>
+            <h3 className="text-sm font-semibold text-white mb-3">Free Morning Briefing Alert</h3>
             <p className="text-xs text-neutral-200 mb-3">
-              Receive the morning digital edition and key national dispatches directly in your inbox.
+              Receive today’s free 25-page digital E-Paper edition and national dispatches in your inbox — zero paywall.
             </p>
             <form onSubmit={handleNewsletter} className="space-y-2">
               <input
@@ -634,7 +680,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
                 type="submit"
                 className="w-full py-2 px-4 rounded bg-[#159B42] hover:bg-[#128337] text-white text-sm font-semibold transition-colors"
               >
-                Subscribe Free
+                Get Free Daily Briefing
               </button>
               {newsletterMsg && <p className="text-xs text-[#EAF5E5]">{newsletterMsg}</p>}
               {newsletterConfirmUrl && (
@@ -644,7 +690,7 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
                   rel="noreferrer"
                   className="inline-block text-xs underline text-amber-200 font-semibold"
                 >
-                  Click to Confirm Subscription →
+                  Click to Confirm Email Alert →
                 </a>
               )}
               {newsletterErr && <p className="text-xs text-red-200">{newsletterErr}</p>}
@@ -653,9 +699,18 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
         </div>
 
         <div className="border-t border-white/15">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-neutral-300">
-            <span>© {new Date().getFullYear()} Maheep News Portal. All rights reserved.</span>
-            <span>Timezone: Asia/Kolkata (IST) · Bilingual Edition (Hindi / English)</span>
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex flex-col md:flex-row items-center justify-between gap-2 text-xs text-neutral-300">
+            <span>© {new Date().getFullYear()} Maheep News Portal · Maheep E-Paper (100% Free).</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <a href="/rss.xml" className="hover:text-white hover:underline">RSS Feed</a>
+              <span aria-hidden="true">·</span>
+              <a href="/sitemap.xml" className="hover:text-white hover:underline">Sitemap</a>
+              <span aria-hidden="true">·</span>
+              <a href="/sitemap-epaper.xml" className="hover:text-white hover:underline">E-Paper Sitemap</a>
+              <span aria-hidden="true">·</span>
+              <a href="/llms.txt" className="hover:text-white hover:underline">AI Summary (llms.txt)</a>
+            </div>
+            <span>IST (Asia/Kolkata) · English &amp; हिन्दी</span>
           </div>
         </div>
       </footer>
@@ -732,6 +787,8 @@ export function PublicLayout({ children, breakingNews = [] }: PublicLayoutProps)
         </div>
       )}
       <ReaderDrawer />
+      <CommandSearchModal open={cmdSearchOpen} onClose={() => setCmdSearchOpen(false)} />
+      <SavedReadingDrawer open={savedDrawerOpen} onClose={() => setSavedDrawerOpen(false)} />
     </div>
   );
 }

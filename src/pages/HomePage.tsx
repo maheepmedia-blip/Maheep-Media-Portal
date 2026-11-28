@@ -2,6 +2,7 @@ import { ArrowRight, BookOpen, Compass, Download, Headphones, History, MapPin, T
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
+import { AeoFaqSection, MAHEEP_EPAPER_FAQS } from '../components/AeoFaqSection.tsx';
 import { EditionDateSelector } from '../components/EditionDateSelector.tsx';
 import { NewsCard } from '../components/NewsCard.tsx';
 import { PollWidget } from '../components/PollWidget.tsx';
@@ -185,16 +186,49 @@ export function HomePage() {
   return (
     <PublicLayout breakingNews={data?.breaking || []}>
       <SeoHead
-        title="Maheep News Portal — सच के साथ, जनता के विश्वास के साथ | News from India & Beyond"
-        description="Bilingual Hindi and English digital newspaper covering National affairs (The Beacon), International (WorldWire), Local States & UTs (Our Pride), Business, Sports, Technology, Education, and daily E-Paper."
+        title="Best E-Paper Site — Maheep E-Paper | Maheep News Portal"
+        description="Maheep E-Paper (https://maheep-media-news.onrender.com/) — Best free daily digital e-paper site in India. Read 25-page English & Hindi editions across The Beacon (National & 36 States), Our Pride (339 Cities), and WorldWire (50 Countries) with zero paywall."
         canonicalPath="/"
+        keywords="best epaper site, maheep epaper, maheep news portal, free hindi epaper, free english epaper, india digital newspaper, our pride local news, the beacon national news, worldwire international news"
+        breadcrumbs={[{ name: 'Home', path: '/' }]}
+        faqItems={MAHEEP_EPAPER_FAQS}
+        speakableSelectors={['h1', 'h2', '.aeo-answer-block']}
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-10">
         {/* Guided Edition -> Date Selection on First Visit, or Persistent Switcher Bar After Selection */}
         <EditionDateSelector states={data?.states || []} />
 
-        {!editionSetupDone ? null : (
+        {!editionSetupDone ? (
+          <div className="space-y-10 pt-2">
+            {(data?.latest || []).length > 0 && (
+              <section className="pt-6 border-t border-neutral-200 dark:border-neutral-800 space-y-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="font-editorial text-2xl font-bold text-neutral-950 dark:text-white">
+                      Today’s Top Dispatches &amp; Daily E-Paper Highlights
+                    </h2>
+                    <p className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
+                      Open any story below or read the complete 25-page Maheep E-Paper free in English and हिन्दी.
+                    </p>
+                  </div>
+                  <Link
+                    to="/epaper"
+                    className="px-4 py-2 rounded bg-[#00652E] hover:bg-[#00451F] text-white text-xs font-semibold whitespace-nowrap"
+                  >
+                    Open 25-Page E-Paper
+                  </Link>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  {(data?.latest || []).slice(0, 4).map((art) => (
+                    <NewsCard key={art.id} article={art} />
+                  ))}
+                </div>
+              </section>
+            )}
+            <AeoFaqSection />
+          </div>
+        ) : (
           <>
             {/* CRO High-Converting Morning E-Paper & Daily Briefing Strip */}
             {(growthConfig?.cro_sticky_bar_enabled ?? true) && (
@@ -585,14 +619,17 @@ export function HomePage() {
               </section>
             )}
 
-            {/* Newsletter Callout */}
+            {/* AEO & GEO Direct-Answer Highlights */}
+            <AeoFaqSection />
+
+            {/* Free Morning Dispatch Callout */}
             <section className="rounded-xl bg-[#EAF5E5] dark:bg-neutral-900 border border-[#00652E]/20 dark:border-neutral-800 p-6 sm:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="max-w-xl">
                 <h2 className="font-editorial text-2xl font-bold text-neutral-950 dark:text-white">
-                  Morning Dispatch from Maheep News Portal
+                  Free Morning Dispatch from Maheep News Portal
                 </h2>
                 <p className="mt-2 text-sm text-neutral-700 dark:text-neutral-300">
-                  Verified Hindi and English summaries of India’s Parliament, state capitals, markets, and daily E-Paper delivered at 7:00 AM IST.
+                  Verified Hindi and English summaries of India’s Parliament, state capitals, markets, and daily 25-page E-Paper delivered at 7:00 AM IST — 100% free.
                 </p>
               </div>
               <form onSubmit={handleSubscribe} className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
@@ -608,7 +645,7 @@ export function HomePage() {
                   type="submit"
                   className="px-5 py-2.5 rounded-md bg-[#00652E] hover:bg-[#00451F] text-white text-sm font-semibold whitespace-nowrap transition-colors"
                 >
-                  Subscribe
+                  Get Free Briefing
                 </button>
               </form>
             </section>
@@ -622,7 +659,7 @@ export function HomePage() {
                     rel="noreferrer"
                     className="inline-block text-xs underline font-semibold text-[#00451F] dark:text-[#4ade80]"
                   >
-                    Click to Confirm Subscription →
+                    Click to Confirm Email Alert →
                   </a>
                 )}
               </div>

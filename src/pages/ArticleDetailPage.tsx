@@ -22,6 +22,7 @@ import { SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
 import type { Article, CommentItem } from '../types/news.ts';
 import { formatIndiaDateTime } from '../utils/date.ts';
+import { isArticleSavedLocally, recordArticleReadLocally, toggleSavedArticleLocally } from '../utils/readerLists.ts';
 import { buildShareUrl, trackGrowthEvent } from '../utils/utm.ts';
 
 type ReaderAiMode = 'summary' | 'explain' | 'student' | 'points' | 'translate' | 'compare' | 'qa';
@@ -135,27 +136,43 @@ export function ArticleDetailPage() {
       .catch(() => {});
   }, [readerToken, article?.id, article?.category_slug, article?.author]);
 
-  const toggleBookmark = async () => {
-    if (!readerToken || !article) {
-      setReaderDrawerOpen(true);
-      return;
+  useEffect(() => {
+    if (!article?.slug) return;
+    recordArticleReadLocally({
+      slug: article.slug,
+      title: article.title,
+      category_name: article.category_name || '',
+    });
+    if (!readerToken) {
+      setBookmarked(isArticleSavedLocally(article.slug));
     }
-    if (bookmarked) {
-      const res = await fetch(`/api/reader/bookmarks/${article.id}`, {
+  }, [article?.slug, article?.title, article?.category_name, readerToken]);
+
+  const toggleBookmark = async () => {
+    if (!article) return;
+    const savedLocal = toggleSavedArticleLocally({
+      slug: article.slug,
+      title: article.title,
+      category_name: article.category_name || '',
+      published_at: article.published_at,
+      image_url: article.image_url,
+    });
+    setBookmarked(savedLocal);
+    if (!readerToken) return;
+    if (!savedLocal) {
+      await fetch(`/api/reader/bookmarks/${article.id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${readerToken}` },
-      });
-      if (res.ok) setBookmarked(false);
+      }).catch(() => {});
     } else {
-      const res = await fetch('/api/reader/bookmarks', {
+      await fetch('/api/reader/bookmarks', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${readerToken}`,
         },
         body: JSON.stringify({ article_id: article.id }),
-      });
-      if (res.ok) setBookmarked(true);
+      }).catch(() => {});
     }
   };
 
@@ -334,6 +351,7 @@ export function ArticleDetailPage() {
             { name: article.category_name || 'News', path: `/search?category=${article.category_slug || 'national'}` },
             { name: article.title.slice(0, 60), path: `/news/${article.slug}` },
           ]}
+          speakableSelectors={['h1', 'article p:first-of-type']}
           jsonLd={{
             '@context': 'https://schema.org',
             '@type': 'NewsArticle',
@@ -342,8 +360,13 @@ export function ArticleDetailPage() {
             datePublished: article.published_at,
             dateModified: article.updated_at,
             inLanguage: article.language === 'hi' ? 'hi-IN' : 'en-IN',
+            isAccessibleForFree: true,
             author: { '@type': 'Person', name: article.author },
-            publisher: { '@type': 'Organization', name: 'Maheep News Portal' },
+            publisher: {
+              '@type': 'NewsMediaOrganization',
+              name: 'Maheep News Portal',
+              url: 'https://maheep-media-news.onrender.com/',
+            },
           }}
         />
       )}

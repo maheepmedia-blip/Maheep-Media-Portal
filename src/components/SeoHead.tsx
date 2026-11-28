@@ -1,8 +1,15 @@
 import { useEffect } from 'react';
 
+export const CANONICAL_ORIGIN = 'https://maheep-media-news.onrender.com';
+
 interface BreadcrumbItem {
   name: string;
   path: string;
+}
+
+export interface FaqSchemaItem {
+  question: string;
+  answer: string;
 }
 
 interface SeoHeadProps {
@@ -20,7 +27,24 @@ interface SeoHeadProps {
   prevPath?: string;
   nextPath?: string;
   breadcrumbs?: BreadcrumbItem[];
-  jsonLd?: Record<string, unknown>;
+  faqItems?: FaqSchemaItem[];
+  speakableSelectors?: string[];
+  jsonLd?: Record<string, unknown> | Array<Record<string, unknown>>;
+}
+
+export function getCanonicalBaseOrigin(): string {
+  if (typeof window === 'undefined') return CANONICAL_ORIGIN;
+  const host = window.location.hostname;
+  if (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host.endsWith('.onrender.com') ||
+    host.includes('run.app') ||
+    host.includes('googleusercontent')
+  ) {
+    return CANONICAL_ORIGIN;
+  }
+  return window.location.origin;
 }
 
 export function SeoHead({
@@ -38,11 +62,14 @@ export function SeoHead({
   prevPath,
   nextPath,
   breadcrumbs,
+  faqItems,
+  speakableSelectors,
   jsonLd,
 }: SeoHeadProps) {
   useEffect(() => {
     document.title = title;
-    const origin = window.location.origin;
+    const canonicalOrigin = getCanonicalBaseOrigin();
+    const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : canonicalOrigin;
 
     const setMeta = (selector: string, attr: string, value: string) => {
       let el = document.querySelector(selector);
@@ -102,14 +129,15 @@ export function SeoHead({
     const resolvedOgImage = ogImage
       ? ogImage.startsWith('http')
         ? ogImage
-        : `${origin}${ogImage.startsWith('/') ? '' : '/'}${ogImage}`
-      : `${origin}/src/assets/images/hero_parliament_india_1795494842593.jpg`;
+        : `${canonicalOrigin}${ogImage.startsWith('/') ? '' : '/'}${ogImage}`
+      : `${canonicalOrigin}/pwa-512x512.png`;
 
     setMeta('meta[property="og:image"]', 'content', resolvedOgImage);
     setMeta('meta[name="twitter:image"]', 'content', resolvedOgImage);
 
     if (canonicalPath) {
-      const fullUrl = `${origin}${canonicalPath}`;
+      const cleanPath = canonicalPath.startsWith('/') ? canonicalPath : `/${canonicalPath}`;
+      const fullUrl = `${canonicalOrigin}${cleanPath}`;
       setMeta('meta[property="og:url"]', 'content', fullUrl);
       setLink('maheep-canonical-link', 'canonical', fullUrl);
       setLink('maheep-hreflang-en', 'alternate', fullUrl, { hreflang: 'en-IN' });
@@ -119,14 +147,14 @@ export function SeoHead({
 
     const prevEl = document.getElementById('maheep-pagination-prev');
     if (prevPath) {
-      setLink('maheep-pagination-prev', 'prev', `${origin}${prevPath}`);
+      setLink('maheep-pagination-prev', 'prev', `${runtimeOrigin}${prevPath}`);
     } else if (prevEl) {
       prevEl.remove();
     }
 
     const nextEl = document.getElementById('maheep-pagination-next');
     if (nextPath) {
-      setLink('maheep-pagination-next', 'next', `${origin}${nextPath}`);
+      setLink('maheep-pagination-next', 'next', `${runtimeOrigin}${nextPath}`);
     } else if (nextEl) {
       nextEl.remove();
     }
@@ -136,7 +164,13 @@ export function SeoHead({
     if (existingScript) existingScript.remove();
 
     const graph: Array<Record<string, unknown>> = [];
-    if (jsonLd) graph.push(jsonLd);
+    if (jsonLd) {
+      if (Array.isArray(jsonLd)) {
+        graph.push(...jsonLd);
+      } else {
+        graph.push(jsonLd);
+      }
+    }
     if (breadcrumbs && breadcrumbs.length > 0) {
       graph.push({
         '@context': 'https://schema.org',
@@ -145,8 +179,33 @@ export function SeoHead({
           '@type': 'ListItem',
           position: idx + 1,
           name: b.name,
-          item: `${origin}${b.path}`,
+          item: `${canonicalOrigin}${b.path}`,
         })),
+      });
+    }
+    if (faqItems && faqItems.length > 0) {
+      graph.push({
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        mainEntity: faqItems.map((f) => ({
+          '@type': 'Question',
+          name: f.question,
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: f.answer,
+          },
+        })),
+      });
+    }
+    if (speakableSelectors && speakableSelectors.length > 0 && canonicalPath) {
+      graph.push({
+        '@context': 'https://schema.org',
+        '@type': 'WebPage',
+        url: `${canonicalOrigin}${canonicalPath}`,
+        speakable: {
+          '@type': 'SpeakableSpecification',
+          cssSelector: speakableSelectors,
+        },
       });
     }
 
@@ -174,6 +233,8 @@ export function SeoHead({
     prevPath,
     nextPath,
     breadcrumbs,
+    faqItems,
+    speakableSelectors,
     jsonLd,
   ]);
 

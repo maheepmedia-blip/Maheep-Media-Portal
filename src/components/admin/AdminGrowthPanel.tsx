@@ -49,6 +49,11 @@ interface GrowthStats {
     statesCovered: number;
     totalStates: number;
     guidesCount: number;
+    editionsCount?: number;
+    citiesCount?: number;
+    countriesCount?: number;
+    canonicalUrl?: string;
+    indexNowKey?: string;
   };
 }
 
@@ -78,12 +83,18 @@ export function AdminGrowthPanel({ token, settings, onRefresh }: AdminGrowthPane
   const [ppcPath, setPpcPath] = useState('/epaper');
   const [ppcSource, setPpcSource] = useState('google');
   const [ppcMedium, setPpcMedium] = useState('cpc');
-  const [ppcCampaign, setPpcCampaign] = useState('india_epaper_search');
-  const [ppcTerm, setPpcTerm] = useState('hindi epaper daily');
-  const [ppcHeadline, setPpcHeadline] = useState('Maheep News — Today’s 6 AM India E-Paper');
+  const [ppcCampaign, setPpcCampaign] = useState('best_epaper_site');
+  const [ppcTerm, setPpcTerm] = useState('best epaper site maheep epaper');
+  const [ppcHeadline, setPpcHeadline] = useState('Best E-Paper Site — Maheep E-Paper Free');
   const [ppcDesc, setPpcDesc] = useState(
-    'Verified national & 36-state coverage in Hindi & English. Zero paywall, AI summary & instant PDF download.',
+    'Read 25-page Hindi & English daily E-Paper free. 339 cities (Our Pride), 36 States (The Beacon) & 50 countries (WorldWire) — zero subscription.',
   );
+  const [pingResult, setPingResult] = useState<{
+    message: string;
+    submittedCount: number;
+    keyUrl: string;
+  } | null>(null);
+  const [pinging, setPinging] = useState(false);
 
   // SMO Channel UTM Builder state
   const [smoPath, setSmoPath] = useState('/guides');
@@ -231,7 +242,7 @@ export function AdminGrowthPanel({ token, settings, onRefresh }: AdminGrowthPane
     }
   };
 
-  const portalOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://maheepmedia.com';
+  const portalOrigin = stats?.seoHealth?.canonicalUrl || 'https://maheep-media-news.onrender.com';
 
   const ppcFinalUrl = useMemo(() => {
     const cleanPath = ppcPath.startsWith('/') ? ppcPath : `/${ppcPath}`;
@@ -527,6 +538,53 @@ export function AdminGrowthPanel({ token, settings, onRefresh }: AdminGrowthPane
             </div>
           </div>
 
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold">Google Ads Responsive Search Ad (RSA) Copy Pack</h3>
+                <p className="text-xs text-neutral-500">
+                  Target Keywords: <span className="font-mono">maheep epaper, best epaper site, free hindi epaper, india daily epaper</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  copyText(
+                    'rsa-pack',
+                    [
+                      `Final URL: ${portalOrigin}/epaper?utm_source=google&utm_medium=cpc&utm_campaign=best_epaper_site`,
+                      'Headlines: Best E-Paper Site | Maheep E-Paper — 25 Daily Pages | Free Hindi & English Broadsheet | 339 Indian Cities & 50 Countries',
+                      'Descriptions: Read India’s verified 25-page digital E-Paper free in English & Hindi with PDF download and zero paywall.',
+                    ].join('\n'),
+                  )
+                }
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-neutral-300 dark:border-neutral-700 text-xs font-semibold hover:border-[#00652E]"
+              >
+                {copiedKey === 'rsa-pack' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedKey === 'rsa-pack' ? 'Copied RSA Pack' : 'Copy Full Ad Pack'}
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 rounded border border-neutral-200 dark:border-neutral-800 space-y-1">
+                <div className="font-semibold text-[#00652E] dark:text-[#4ade80]">Recommended Headlines (≤30 chars)</div>
+                <ul className="space-y-0.5 text-neutral-700 dark:text-neutral-300 list-disc pl-4">
+                  <li>Best E-Paper Site — Free</li>
+                  <li>Maheep E-Paper Daily 25 Pages</li>
+                  <li>Hindi &amp; English Same Stories</li>
+                  <li>339 Cities · 36 States · 50 Nations</li>
+                </ul>
+              </div>
+              <div className="p-3 rounded border border-neutral-200 dark:border-neutral-800 space-y-1">
+                <div className="font-semibold text-[#00652E] dark:text-[#4ade80]">Search Console &amp; Ranking Checklist</div>
+                <ul className="space-y-0.5 text-neutral-700 dark:text-neutral-300 list-disc pl-4">
+                  <li>Submit <span className="font-mono">/sitemap.xml</span>, <span className="font-mono">/sitemap-news.xml</span>, <span className="font-mono">/sitemap-epaper.xml</span> in Google Search Console</li>
+                  <li>Canonical URL locked to <span className="font-mono">{portalOrigin}</span></li>
+                  <li>AEO/GEO context exposed on <span className="font-mono">/llms.txt</span> &amp; <span className="font-mono">FAQPage</span> JSON-LD</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
           <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5">
             <h3 className="text-sm font-bold mb-3">30-Day UTM Campaign Attribution</h3>
             <div className="overflow-x-auto">
@@ -597,14 +655,64 @@ export function AdminGrowthPanel({ token, settings, onRefresh }: AdminGrowthPane
           )}
 
           <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
-            <h2 className="text-base font-bold flex items-center gap-2">
-              <Globe className="w-4 h-4 text-[#00652E]" /> Technical Sitemaps & Crawler Endpoints
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-[#00652E]" /> Technical Sitemaps, AEO/GEO &amp; Search Crawler Endpoints
+                </h2>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Canonical Origin: <span className="font-mono font-semibold text-[#00652E] dark:text-[#4ade80]">{portalOrigin}</span>
+                  {stats?.seoHealth?.editionsCount ? ` · ${stats.seoHealth.editionsCount} Editions · ${stats.seoHealth.citiesCount || 339} Cities · ${stats.seoHealth.countriesCount || 50} Countries` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={pinging}
+                onClick={async () => {
+                  setPinging(true);
+                  setPingResult(null);
+                  try {
+                    const res = await authFetch('/api/admin/seo/ping-index', { method: 'POST' });
+                    const json = await res.json();
+                    if (res.ok) {
+                      setPingResult({
+                        message: json.indexNowMessage || 'Submitted to IndexNow.',
+                        submittedCount: json.submittedCount || 0,
+                        keyUrl: json.keyVerificationUrl || '',
+                      });
+                      flash('IndexNow submission & sitemap verification executed.');
+                    }
+                  } finally {
+                    setPinging(false);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded bg-[#00652E] text-white text-xs font-semibold hover:bg-[#004d23] disabled:opacity-60"
+              >
+                {pinging ? 'Submitting...' : 'Ping IndexNow & Verify URLs'}
+              </button>
+            </div>
+            {pingResult && (
+              <div className="p-3 rounded border border-emerald-200 dark:border-emerald-900 bg-emerald-50/70 dark:bg-emerald-950/30 text-xs space-y-1">
+                <div className="font-semibold text-emerald-800 dark:text-emerald-200">
+                  {pingResult.message} ({pingResult.submittedCount} canonical URLs dispatched)
+                </div>
+                {pingResult.keyUrl && (
+                  <div className="font-mono text-[11px] text-neutral-600 dark:text-neutral-300">
+                    IndexNow Verification Key URL: {pingResult.keyUrl}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
               {[
-                { label: 'Robots.txt Directives', path: '/robots.txt' },
-                { label: 'Full XML Sitemap (Articles + States + Guides)', path: '/sitemap.xml' },
-                { label: 'Google News 48h XML Sitemap', path: '/sitemap-news.xml' },
+                { label: 'Robots.txt (Google + AI Bots)', path: '/robots.txt' },
+                { label: 'Full XML Sitemap', path: '/sitemap.xml' },
+                { label: 'Google News 48h Sitemap', path: '/sitemap-news.xml' },
+                { label: 'E-Paper, 339 Cities & 50 Countries', path: '/sitemap-epaper.xml' },
+                { label: 'RSS 2.0 Syndication Feed', path: '/rss.xml' },
+                { label: 'OpenSearch Descriptor', path: '/opensearch.xml' },
+                { label: 'AEO / GEO Summary (llms.txt)', path: '/llms.txt' },
+                { label: 'Extended AI Index (llms-full.txt)', path: '/llms-full.txt' },
               ].map((ep) => (
                 <a
                   key={ep.path}
@@ -613,9 +721,9 @@ export function AdminGrowthPanel({ token, settings, onRefresh }: AdminGrowthPane
                   rel="noreferrer"
                   className="p-3 rounded border border-neutral-200 dark:border-neutral-700 hover:border-[#00652E] flex items-center justify-between gap-2"
                 >
-                  <div>
-                    <div className="font-semibold">{ep.label}</div>
-                    <div className="text-[11px] text-neutral-500 font-mono">{ep.path}</div>
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate">{ep.label}</div>
+                    <div className="text-[11px] text-neutral-500 font-mono truncate">{ep.path}</div>
                   </div>
                   <ExternalLink className="w-3.5 h-3.5 text-[#00652E] shrink-0" />
                 </a>

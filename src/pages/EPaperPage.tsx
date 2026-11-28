@@ -10,12 +10,14 @@ import {
   ExternalLink,
   FileText,
   Globe2,
+  HelpCircle,
   Landmark,
   MapPin,
   Maximize2,
   Minimize2,
   Printer,
   Search,
+  Share2,
   Square,
   Volume2,
   ZoomIn,
@@ -24,16 +26,19 @@ import {
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AdSlot } from '../components/AdSlot.tsx';
+import { AeoFaqSection, MAHEEP_EPAPER_FAQS } from '../components/AeoFaqSection.tsx';
 import { ArticleImage } from '../components/ArticleImage.tsx';
 import { DetailedWireEPaper } from '../components/DetailedWireEPaper.tsx';
 import { PublicLayout } from '../components/PublicLayout.tsx';
-import { SeoHead } from '../components/SeoHead.tsx';
+import { CANONICAL_ORIGIN, SeoHead } from '../components/SeoHead.tsx';
 import { usePortal } from '../context/PortalContext.tsx';
 import { fetchActiveAdsMerged } from '../services/adsFirestore.ts';
 import type { Advertisement, Edition, EditionPage } from '../types/news.ts';
 import { formatIndiaDateTime } from '../utils/date.ts';
 import { downloadEditionPdf } from '../utils/pdf.ts';
+import { isEpaperPageSavedLocally, toggleSavedEpaperPageLocally } from '../utils/readerLists.ts';
 import { speakNewspaperText, stopNewspaperSpeech } from '../utils/speech.ts';
+import { trackGrowthEvent } from '../utils/utm.ts';
 
 type PaperTheme = 'light' | 'sepia' | 'dark';
 type ReaderViewMode = 'broadsheet' | 'article';
@@ -206,6 +211,8 @@ export function EPaperPage() {
   const [pageSaved, setPageSaved] = useState(false);
   const [speakingTarget, setSpeakingTarget] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [sharedLinkNotice, setSharedLinkNotice] = useState(false);
 
   // Archive Search
   const [archiveQuery, setArchiveQuery] = useState('');
@@ -371,9 +378,11 @@ export function EPaperPage() {
     };
   }, [paperSection, selectedEdition?.id, currentPageIdx, language]);
 
-  // Track reader continue-from-last-page progress
+  // Track reader continue-from-last-page progress + free local saved check
   useEffect(() => {
-    if (!readerToken || !selectedEdition || !activePage) return;
+    if (!selectedEdition || !activePage) return;
+    setPageSaved(isEpaperPageSavedLocally(selectedEdition.edition_date, activePage.pageNumber));
+    if (!readerToken) return;
     void fetch('/api/reader/epaper-progress', {
       method: 'POST',
       headers: {
@@ -385,24 +394,32 @@ export function EPaperPage() {
         page_number: activePage.pageNumber,
       }),
     });
-    setPageSaved(false);
   }, [readerToken, selectedEdition?.edition_date, activePage?.pageNumber]);
 
-  // Keyboard page navigation & Escape fullscreen
+  // Keyboard page navigation, theme cycle, focus mode & shortcuts help
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) {
+        return;
+      }
       if (e.key === 'ArrowRight' && currentPageIdx < pages.length - 1) {
         setCurrentPageIdx((i) => Math.min(pages.length - 1, i + 1));
       } else if (e.key === 'ArrowLeft' && currentPageIdx > 0) {
         setCurrentPageIdx((i) => Math.max(0, i - 1));
-      } else if (e.key === 'Escape' && fullscreen) {
-        setFullscreen(false);
+      } else if (e.key === 'Escape') {
+        if (fullscreen) setFullscreen(false);
+        if (shortcutsOpen) setShortcutsOpen(false);
+      } else if (e.key.toLowerCase() === 'f') {
+        setFullscreen((v) => !v);
+      } else if (e.key.toLowerCase() === 't') {
+        setPaperTheme((curr) => (curr === 'light' ? 'sepia' : curr === 'sepia' ? 'dark' : 'light'));
+      } else if (e.key === '?') {
+        setShortcutsOpen((v) => !v);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [currentPageIdx, pages.length, fullscreen]);
+  }, [currentPageIdx, pages.length, fullscreen, shortcutsOpen]);
 
   const handleDateChange = (dateVal: string, pageNum = 1) => {
     const found = editions.find((e) => e.edition_date === dateVal);
@@ -430,12 +447,15 @@ export function EPaperPage() {
   };
 
   const bookmarkCurrentPage = async () => {
-    if (!readerToken) {
-      setReaderDrawerOpen(true);
-      return;
-    }
     if (!selectedEdition || !activePage) return;
-    const res = await fetch('/api/reader/epaper-bookmarks', {
+    const savedNow = toggleSavedEpaperPageLocally({
+      edition_date: selectedEdition.edition_date,
+      page_number: activePage.pageNumber,
+      section_title: activePage.sectionTitle,
+    });
+    setPageSaved(savedNow);
+    if (!readerToken || !savedNow) return;
+    await fetch('/api/reader/epaper-bookmarks', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -446,8 +466,29 @@ export function EPaperPage() {
         page_number: activePage.pageNumber,
         section_title: activePage.sectionTitle,
       }),
-    });
-    if (res.ok) setPageSaved(true);
+    }).catch(() => {});
+  };
+
+  const shareCurrentEdition = async () => {
+    if (!selectedEdition || !activePage) return;
+    const url = `${CANONICAL_ORIGIN}/epaper?date=${encodeURIComponent(selectedEdition.edition_date)}&page=${activePage.pageNumber}`;
+    const shareTitle = `Maheep E-Paper (${selectedEdition.edition_date}) · Page ${activePage.pageNumber}`;
+    trackGrowthEvent('share_click', { path: '/epaper', cta_variant: 'epaper_toolbar_share' });
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        await navigator.share({ title: shareTitle, text: activePage.sectionTitle, url });
+        return;
+      } catch {
+        // User dismissed or unsupported, fall through to clipboard
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(`${shareTitle}\n${url}`);
+      setSharedLinkNotice(true);
+      window.setTimeout(() => setSharedLinkNotice(false), 2200);
+    } catch {
+      // Ignore clipboard error
+    }
   };
 
   useEffect(() => {
@@ -541,12 +582,38 @@ export function EPaperPage() {
     })),
   );
 
+  const epaperSeoTitle =
+    paperSection === 'beacon'
+      ? 'The Beacon E-Paper — India National & 36 States | Best E-Paper Site'
+      : paperSection === 'our-pride'
+        ? 'Our Pride City E-Paper — 339 Indian Cities | Best E-Paper Site'
+        : paperSection === 'worldwire'
+          ? 'WorldWire E-Paper — 50 Countries | Best E-Paper Site'
+          : 'Best E-Paper Site — Maheep E-Paper | 25-Page Free Digital Broadsheet';
+
   return (
     <PublicLayout>
       <SeoHead
-        title="Digital E-Paper & Archive Reader — Maheep News Portal"
-        description="Detailed Maheep Digital Broadsheet with full multi-paragraph reporting, page zoom, Sepia/Dark/Light reading themes, Clean Article Mode, clickable index, and archive search."
-        canonicalPath="/epaper"
+        title={epaperSeoTitle}
+        description="Read Maheep E-Paper (https://maheep-media-news.onrender.com/epaper) — India’s best free daily e-paper site. Browse 25-page A4 editions in English & Hindi across The Beacon (National & 36 States), Our Pride (339 Cities), and WorldWire (50 Countries) with PDF export and audio narration."
+        canonicalPath={paperSection === 'broadsheet' ? '/epaper' : `/epaper?section=${paperSection}`}
+        keywords="best epaper site, maheep epaper, free daily epaper india, hindi epaper pdf download, our pride local epaper, the beacon national epaper, worldwire epaper"
+        breadcrumbs={[
+          { name: 'Home', path: '/' },
+          { name: 'Best E-Paper Site — Maheep E-Paper', path: '/epaper' },
+        ]}
+        faqItems={MAHEEP_EPAPER_FAQS}
+        speakableSelectors={['h1', '.aeo-answer-block']}
+        jsonLd={{
+          '@context': 'https://schema.org',
+          '@type': 'WebApplication',
+          name: 'Maheep E-Paper — Best E-Paper Site',
+          url: `${CANONICAL_ORIGIN}/epaper`,
+          applicationCategory: 'NewsApplication',
+          operatingSystem: 'Web',
+          isAccessibleForFree: true,
+          inLanguage: ['en-IN', 'hi-IN'],
+        }}
       />
 
       <div className={`${fullscreen ? 'max-w-6xl' : 'max-w-7xl'} mx-auto px-4 sm:px-6 py-8 space-y-6`}>
@@ -1022,7 +1089,7 @@ export function EPaperPage() {
             <div className={`${fullscreen ? 'lg:col-span-12' : 'lg:col-span-9'} space-y-4`}>
               {/* Smart Controls Bar */}
               <div className="flex flex-wrap items-center justify-between gap-3 bg-neutral-100 dark:bg-neutral-900 px-4 py-2.5 rounded-lg no-print">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     disabled={currentPageIdx === 0}
@@ -1031,8 +1098,20 @@ export function EPaperPage() {
                   >
                     <ChevronLeft className="w-4 h-4" /> Prev
                   </button>
-                  <span className="text-xs font-mono-tabular font-semibold px-2">
-                    Page {activePage.pageNumber} / {pages.length} · {selectedEdition.edition_date}
+                  <select
+                    aria-label="Jump directly to page"
+                    value={currentPageIdx}
+                    onChange={(e) => setCurrentPageIdx(Number(e.target.value) || 0)}
+                    className="px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-xs font-mono-tabular font-semibold"
+                  >
+                    {pages.map((p, idx) => (
+                      <option key={p.pageNumber} value={idx}>
+                        Page {p.pageNumber} / {pages.length} · {p.sectionTitle}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-[11px] font-mono-tabular text-neutral-500 hidden sm:inline">
+                    {selectedEdition.edition_date}
                   </span>
                   {translatingPage && (
                     <span className="text-[11px] font-semibold text-[#00652E] dark:text-[#4ade80]">
@@ -1173,15 +1252,54 @@ export function EPaperPage() {
 
                   <button
                     type="button"
+                    onClick={shareCurrentEdition}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 font-semibold whitespace-nowrap hover:border-[#00652E]"
+                    title="Share this E-Paper page"
+                  >
+                    {sharedLinkNotice ? <Check className="w-3 h-3 text-[#00652E]" /> : <Share2 className="w-3 h-3" />}
+                    {sharedLinkNotice ? 'Link Copied' : 'Share'}
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => setFullscreen((f) => !f)}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 font-semibold whitespace-nowrap"
-                    title="Distraction-free fullscreen reading"
+                    title="Distraction-free fullscreen reading (F)"
                   >
                     {fullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
                     {fullscreen ? 'Exit Focus' : 'Focus'}
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShortcutsOpen((v) => !v)}
+                    aria-label="Toggle keyboard shortcuts"
+                    title="Keyboard Shortcuts (?)"
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded border font-semibold whitespace-nowrap ${
+                      shortcutsOpen
+                        ? 'bg-[#00652E] text-white border-[#00652E]'
+                        : 'border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950'
+                    }`}
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
+
+              {shortcutsOpen && (
+                <div className="px-4 py-2.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-600 dark:text-neutral-300 no-print">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <span><strong className="font-mono-tabular">← / →</strong> Flip Page</span>
+                    <span><strong className="font-mono-tabular">T</strong> Theme (Light/Sepia/Dark)</span>
+                    <span><strong className="font-mono-tabular">F</strong> Focus Mode</span>
+                    <span><strong className="font-mono-tabular">Ctrl+K</strong> Quick Jump Anywhere</span>
+                    <span><strong className="font-mono-tabular">Esc</strong> Exit Focus</span>
+                  </div>
+                  <button type="button" onClick={() => setShortcutsOpen(false)} className="text-[#00652E] font-semibold hover:underline">
+                    Hide
+                  </button>
+                </div>
+              )}
 
               {/* Thin Edition Progress Strip */}
               <div className="h-[2px] w-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden rounded-full no-print">
@@ -1560,6 +1678,12 @@ export function EPaperPage() {
           </div>
         )}
           </>
+        )}
+
+        {!fullscreen && (
+          <div className="no-print">
+            <AeoFaqSection />
+          </div>
         )}
       </div>
     </PublicLayout>

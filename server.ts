@@ -7,6 +7,7 @@ import { initDatabase } from './server/db.ts';
 import { ensureAllEditionsDetailed25Pages } from './server/epaper.ts';
 import { startUnifiedScheduler } from './server/jobs.ts';
 import { registerApiRoutes } from './server/routes.ts';
+import { injectRouteSeoMeta, resolveCanonicalBaseUrl } from './server/seoMiddleware.ts';
 
 async function startServer() {
   initDatabase();
@@ -50,12 +51,51 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: 'spa',
     });
+    app.use(async (req, res, next) => {
+      const reqPath = req.path || '/';
+      const isDocumentRequest =
+        req.method === 'GET' &&
+        !reqPath.startsWith('/@') &&
+        !reqPath.startsWith('/src/') &&
+        !reqPath.startsWith('/node_modules/') &&
+        !reqPath.startsWith('/assets/') &&
+        !reqPath.startsWith('/uploads/') &&
+        !/\.[a-zA-Z0-9]{1,8}$/.test(reqPath);
+      if (!isDocumentRequest) {
+        next();
+        return;
+      }
+      try {
+        const rawHtml = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
+        const transformed = await vite.transformIndexHtml(req.originalUrl, rawHtml);
+        const finalHtml = injectRouteSeoMeta(transformed, req.originalUrl, resolveCanonicalBaseUrl());
+        res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').end(finalHtml);
+      } catch (e) {
+        vite.ssrFixStacktrace(e as Error);
+        next(e);
+      }
+    });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
+    app.use(
+      express.static(distDir, {
+        index: false,
+        maxAge: '7d',
+        setHeaders: (res, filePath) => {
+          if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+        },
+      }),
+    );
+    let cachedProdTemplate = '';
+    app.get('*', (req, res) => {
+      if (!cachedProdTemplate) {
+        cachedProdTemplate = fs.readFileSync(path.join(distDir, 'index.html'), 'utf-8');
+      }
+      const finalHtml = injectRouteSeoMeta(cachedProdTemplate, req.originalUrl, resolveCanonicalBaseUrl());
       res.setHeader('Cache-Control', 'no-store');
-      res.sendFile(path.join(distDir, 'index.html'));
+      res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').end(finalHtml);
     });
   }
 
